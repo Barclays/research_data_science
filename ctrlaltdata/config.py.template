@@ -1,0 +1,35 @@
+# This file contains various configuration variables which are required for
+# different modules of this repository to work.
+# Add here configurations for database connections, static variables, etc.
+# This is a public file and should generally not hold bare personal authentication strings.
+
+# Imports
+# To find the correct version of {SQL Server} run the following command
+# import pyodbc; print(pyodbc.drivers())
+import os
+import pyodbc
+
+# Add in the list below the database modules which you want to enable
+# and work with using this repository.
+# You should also remove any data sources which are not set-up
+enabled_modules = ['qad']
+
+# We expect QAD is on a server accessible by the local machine.
+# Uncomment and modify the qad connection string variable below
+# QAD_CONNECTION_STRING = (
+#     "DRIVER=;Server=;Database=;port=;"
+#     "UID=;PWD=;"
+# )
+
+
+# Sometimes SQL queries expect different date formats in different geographies.
+# Add/Uncomment below any specific date format requirements for running queries
+# This format for Europe
+# DATE_STRING_FORMAT_QAD = "%Y-%m-%d"
+# This format for North American
+DATE_STRING_FORMAT_QAD = "%Y-%m-%d"
+
+# Some parts of this repository import PySpark modules
+# Use the below boolean flag to according to whether you have Pyspark
+# installed on your machine
+spark_installed = True

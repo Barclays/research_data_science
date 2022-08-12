@@ -1,0 +1,5 @@
+moneypandas
+numpy
+pandas
+pyodbc
+python_stdnum
