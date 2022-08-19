@@ -323,3 +323,15 @@ def get_sp_1200_panel(since, until, frequency='BM'):
     panel.loc[panel.security_key_name == 'cusip', 'security_key'] = cusip_abbrev_to_full(
         panel.loc[panel.security_key_name == 'cusip', 'security_key_abbrev'])
     return panel
+
+def search_for_datastream_index(search_term=None):
+    """Returns a list of possible indices available from the Datastream source.
+    These names can be used in get_index_from_datastream().
+    :param search_term: str, fragment of index name to search for. 
+        If none given, returns the whole list of indices (large)
+    :returns: A DataFrame listing the code, mnemonic and name of all relevant indices.
+    """
+    qad = ResourceManager().qad
+    if search_term:
+        search_term=search_term.upper()
+    return qad.datastream_index_name_search(search_term=search_term)

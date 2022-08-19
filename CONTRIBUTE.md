@@ -1,6 +1,6 @@
 # Contributing
 
-Initially, we welcome limited open-source contributions. Please contact us at ResearchDataScienceGithub@barclays.com to see if your contribution fits the current scope of our package, and to complete the contributor’s agreement. We especially encourage contribution of new data modules. The most broadly impactful might be those accessing open data sets, as they're free for anyone to use. Also very valuable are contributions from data vendors who would like to make it easier for customers in academia and industry to use their data sets.
+Initially, we welcome limited open-source contributions. Please contact us at researchdatagovernance@barclayscorp.com to see if your contribution fits the current scope of our package, and to complete the contributor’s agreement. We especially encourage contribution of new data modules. The most broadly impactful might be those accessing open data sets, as they're free for anyone to use. Also very valuable are contributions from data vendors who would like to make it easier for customers in academia and industry to use their data sets.
 
 Top-level guidelines for contributions are:
 * All data modules should be for data sets which are _available to anyone_ for use or purchase;

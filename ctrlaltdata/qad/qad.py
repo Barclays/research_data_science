@@ -1030,6 +1030,26 @@ class QAD(SqlReader):
         result['in_index_since'] = pd.to_datetime(result['in_index_since'])
         result['in_index_until'] = pd.to_datetime(result['in_index_until'])
         return result
+    
+    def datastream_index_name_search(self, search_term=None):
+        """Query the Datastream table listing indexes available to search for all matching indexes
+        If no search term given, return whole table"""
+        if search_term:
+            query = f"""
+            select
+                IndexListIntCode as index_code,
+                IndexListDesc as index_name,
+                IndexListMnem as index_mnemonic
+            FROM Ds2IndexList
+                where IndexListDesc like '%{search_term}%'"""
+        else:
+            query = """
+            select 
+                IndexListIntCode as index_code,
+                IndexListDesc as index_name,
+                IndexListMnem as index_mnemonic
+            FROM Ds2IndexList"""
+        return self.query(query)
 
     def datastream_index_code_from_name(self, index_name):
         """given an DataStream index name, find the index numeric code """
@@ -1396,5 +1416,74 @@ class QAD(SqlReader):
             OR (mastX.cusip IN ({cusips}) OR mastX.prevcusip IN ({cusips}))
                 )""".format(cusips=",".join(["'{}'".format(i) for i in cusip]),
                             sedols=",".join(["'{}'".format(i) for i in sedol]))
-        return self.query(query)   
+        return self.query(query)
+
+    def get_worldscope_feature(self, panel, feature_name, feature_code, period='A',
+                               exact_match_allowed=True, convert_currency=True,
+                               is_security_level=False, db_column_name=None):
+        """
+        Helper function to add worldscope feature to a minimal copy of the panel.
+        The caller function to this function is the user facing function which dictates
+        which worldscope feature has to be added.
+
+        Company refers to the whole organisation.
+        Security refers to the specific assets, earnings and returns due to each instrument/listing/share class.
+
+        Some examples for company level metrics are EBITDA, Enterprise Value, Sales
+        Some examples for security level metrics are Earnings Per Share, Book Value Per Share
+
+        :param panel: Pandas Dataframe
+                    Panel object conforming to panel tool object standards
+        :param feature_name: str
+                    Determines the column name of the added feature
+        :param feature_code: int
+                    Worldscope item code of feature to be added
+        :param period: str, default 'A'
+                    period type (NOT pandas standard) to retrive cash from,
+                    either annual type ['A','B','G'] or quarterly type ["E","Q","H","I","R","@"]
+        :param exact_match_allowed: bool, default True
+                    - If True, allow matching with the same 'on' value
+                      (i.e. less-than-or-equal-to / greater-than-or-equal-to)
+                    - If False, don't match the same 'on' value
+                      (i.e., strictly less-than / strictly greater-than).
+        :param convert_currency: bool, default True
+                            - If True, convert added feature's currency to `to_currency`
+                            - If False, keep as a currency aware object (XMoney)
+        :param is_security_level: bool, default False
+                            - If True, uses security level keys to join the feature on the panel
+                            - If False, uses company level keys to join the feature on the panel
+        :param db_column_name: str, default None
+                            - If given, replaces the column name with this string with the `feature_name`
+        :returns: A minimal copy of the panel with ['security_key_name','security_key', 'date', `feature_name`]
+        """
+        df = panel[panel.features.unit_key + panel.features.time_key].copy()
+        if is_security_level:
+            worldscope_key = 'worldscope_security_key'
+            df = self.worldscope_security_key(df)
+        else:
+            worldscope_key = 'worldscope_key'
+            df = self.worldscope_key(df)
+
+        df.loc[df[worldscope_key].isna(), worldscope_key] = "-99"
+
+        worldscope_keys = df[~df[worldscope_key].isna()][worldscope_key].unique()
+
+        feature = self.worldscope_add_last_actual(
+            worldscope_keys, period=period, metric_code=feature_code, exact_match_allowed=exact_match_allowed)
+        feature = feature.rename(columns={'worldscope_key': worldscope_key})
+
+        if db_column_name is not None:
+            feature.rename(columns={db_column_name: feature_name}, inplace=True)
+
+        df = df.features._asof_merge_feature(feature,
+                                             feature_name,
+                                             on=df.features.time_key,
+                                             by=[worldscope_key],
+                                             exact_match_allowed=exact_match_allowed)
+
+        if convert_currency:
+            df = df.units.convert_currency_aware_column(
+                metric=feature_name, exact_day_match=True)
+
+        return df.drop(columns=['security_key_abbrev', worldscope_key])
 

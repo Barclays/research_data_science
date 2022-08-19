@@ -1018,38 +1018,230 @@ class Features():
         return self._obj.merge(feature,
                                on=['security_key_abbrev', 'security_key_name' ],
                                how='left')
-    
+
+    def gross_profit_margin(self, period='A', exact_match_allowed=True):
+        """ Function returns Gross Profit Margin. Also called Profitability Ratio.
+        Defined as Gross Income / Net Sales or Revenues * 100.
+        Note: The function returns the ratio after dividing by 100.
+        :param period: str, default 'A'
+                    period type (NOT pandas standard) to retrieve from,
+                    either annual type ['A','B','G'] or quarterly type ['E,'Q','H','I','R','@']
+        :param exact_match_allowed: bool, default True
+                    - If True, allow matching with the same 'on' value
+                      (i.e. less-than-or-equal-to / greater-than-or-equal-to)
+                    - If False, don't match the same 'on' value
+                      (i.e., strictly less-than / strictly greater-than).
+        """
+        self._warn_if_overwriting_and_delete('gross_profit_margin')
+        qad = ResourceManager().qad
+        feature_panel = qad.get_worldscope_feature(self._obj, feature_name='gross_profit_margin', feature_code=8306,
+                                                   period=period,
+                                                   exact_match_allowed=exact_match_allowed,
+                                                   convert_currency=False,
+                                                   is_security_level=False)
+
+        self._obj = self._obj.merge(feature_panel, on=self.unit_key + self.time_key, how='left')
+        self._obj['gross_profit_margin'] = self._obj['gross_profit_margin'].astype(float) / 100
+        return self._obj
+
     def sales(self, period='A', exact_match_allowed=True, convert_currency=True):
         """adds the worldscope "net sales or revenue variable" to the panel as 'sales' for brevity
         'NET SALES OR REVENUES represent gross sales and other operating revenue less discounts, returns and allowances.'
         :param period: str, period type (NOT pandas standard) to retrive net cash from,
             either annual type ['A','B','G'] or quarterly type ["E","Q","H","I","R","@"]
-        :bool exact_match_allowed: Allow same day merges, if False joins with previous date
+        :param exact_match_allowed: bool. Allow same day merges, if False joins with previous date
         :param convert_currency: Bool, if True converts all values to USD (scalar), 
             if False keep as currency aware object (XMoney module)
         """
-        qad = ResourceManager().qad
-        df = self._obj.copy()
-        if "worldscope_key" not in df.columns:
-            df = qad.worldscope_key(df)
-        df.loc[df.worldscope_key.isna(), 'worldscope_key'] = "-99"
-        df = df[['security_key', 'date', 'security_key_name', 'worldscope_key']]
-        worldscope_keys = df[~df.worldscope_key.isna()].worldscope_key.unique()
-        feature = qad.worldscope_add_last_actual(
-            worldscope_keys, period=period, metric_code=1001, exact_match_allowed=exact_match_allowed)
-        feature.rename(
-            columns={'net_sales_or_revenues': 'sales'}, inplace=True)
-
-        df = df.features._asof_merge_feature(feature,
-                                             'sales',
-                                             on='date',
-                                             by=['worldscope_key'],
-                                             exact_match_allowed=exact_match_allowed)
-        df.drop(columns=['worldscope_key'], inplace=True)
-
-        if convert_currency:
-            df = df.units.convert_currency_aware_column(
-                metric='sales',  exact_day_match=exact_match_allowed)
+        db_column_name = 'net_sales_or_revenues'
         self._warn_if_overwriting_and_delete('sales')
-        return self._obj.merge(df, on=['security_key', 'date', 'security_key_name'], how='left')
+        qad = ResourceManager().qad
+        feature_panel = qad.get_worldscope_feature(self._obj, feature_name='sales', feature_code=1001, period=period,
+                                                   exact_match_allowed=exact_match_allowed, convert_currency=convert_currency,
+                                                   is_security_level=False, db_column_name=db_column_name)
+        
+        self._obj = self._obj.merge(feature_panel, on=self.unit_key + self.time_key, how='left')
+        return self._obj
 
+    def net_debt_by_ebitda_ratio(self, period='A', exact_match_allowed=True):
+        """
+        Net Debt(= -Net Cash) / EBITDA
+
+        :param period: str, period type (NOT pandas standard) to retrieve net cash from,
+            either annual type ['A','B','G'] or quarterly type ["E","Q","H","I","R","@"]
+        :param exact_match_allowed: bool, default True
+                    - If True, allow matching with the same 'on' value
+                      (i.e. less-than-or-equal-to / greater-than-or-equal-to)
+                    - If False, don't match the same 'on' value
+                      (i.e., strictly less-than / strictly greater-than).
+        """
+        df = self._obj[self.unit_key + ['date']].copy()
+        df = df.features.net_cash(period=period, exact_match_allowed=exact_match_allowed, convert_currency=True)
+        df = df.features.ebitda(period=period, exact_match_allowed=exact_match_allowed, convert_currency=True)
+        
+        df['net_debt_by_ebitda_ratio'] = -df['net_cash'] / df['ebitda']
+
+        self._obj = self._asof_merge_feature(df[self.unit_key + ['date', 'net_debt_by_ebitda_ratio']],
+                                             'net_debt_by_ebitda_ratio',
+                                             exact_match_allowed=exact_match_allowed)
+        return self._obj
+
+    def book_to_price_ratio(self, exact_match_allowed=True):
+        """
+        BOOK VALUE PER SHARE represents the book value (proportioned common equity divided by outstanding
+        shares) at the company's fiscal year end for non-U.S. corporations and at the end of the last calendar quarter
+        for U.S. corporations.
+
+        :param exact_match_allowed: bool, default True
+                    - If True, allow matching with the same 'on' value
+                      (i.e. less-than-or-equal-to / greater-than-or-equal-to)
+                    - If False, don't match the same 'on' value
+                      (i.e., strictly less-than / strictly greater-than).
+        """
+        self._warn_if_overwriting_and_delete('book_to_price_ratio')
+        qad = ResourceManager().qad
+        feature_panel = qad.get_worldscope_feature(self._obj, feature_name='book_value_per_share', feature_code=5476,
+                                                   period='A', exact_match_allowed=exact_match_allowed,
+                                                   convert_currency=True, is_security_level=True)
+        
+        feature_panel = feature_panel.features.closing_price(adj_type=0, exact_day_match=exact_match_allowed,
+                                                             convert_currency=True, to_currency='USD')
+
+        feature_panel['book_to_price_ratio'] = feature_panel['book_value_per_share']/feature_panel['closing_price']
+
+        self._obj = self._obj.merge(feature_panel[self.unit_key + ['date', 'book_to_price_ratio']],
+                                    on=self.unit_key + ['date'],
+                                    how='left')
+        return self._obj
+
+    def ebitda_by_enterprise_value_ratio(self, exact_match_allowed=True):
+        """
+        EBITDA/EV
+
+        :param exact_match_allowed: bool, default True
+                    - If True, allow matching with the same 'on' value
+                      (i.e. less-than-or-equal-to / greater-than-or-equal-to)
+                    - If False, don't match the same 'on' value
+                      (i.e., strictly less-than / strictly greater-than).
+        """
+        df = self._obj[self.unit_key + ['date']].copy()
+        df = df.features.ebitda(period='A', exact_match_allowed=exact_match_allowed, convert_currency=True)
+        df = df.features.enterprise_value(period='A', exact_match_allowed=exact_match_allowed)
+
+        df['ebitda_by_enterprise_value_ratio'] = df['ebitda'] / df['enterprise_value']
+
+        self._obj = self._asof_merge_feature(df[self.unit_key + ['date', 'ebitda_by_enterprise_value_ratio']],
+                                             'ebitda_by_enterprise_value_ratio',
+                                             exact_match_allowed=exact_match_allowed)
+        return self._obj
+
+    def net_debt_by_market_value_ratio(self, exact_match_allowed=True):
+        """
+        Net Debt (= negative of Net Cash) / Market Value. This ratio uses trailing annual figures.
+
+
+
+        :param exact_match_allowed: bool, default True
+                    - If True, allow matching with the same 'on' value
+                      (i.e. less-than-or-equal-to / greater-than-or-equal-to)
+                    - If False, don't match the same 'on' value
+                      (i.e., strictly less-than / strictly greater-than).
+        """
+        df = self._obj[self.unit_key + ['date']].copy()
+        df = df.features.net_cash(period='A', exact_match_allowed=exact_match_allowed, convert_currency=True)
+        df = df.features.consolidated_market_value(exact_day_match=exact_match_allowed, convert_currency=True)
+
+        df['net_debt_by_market_value_ratio'] = -df['net_cash'] / df['consolidated_market_value']
+
+        self._obj = self._asof_merge_feature(df[self.unit_key + ['date', 'net_debt_by_market_value_ratio']],
+                                             'net_debt_by_market_value_ratio',
+                                             exact_match_allowed=exact_match_allowed)
+        return self._obj
+
+    def ebitda(self, period='A', exact_match_allowed=True, convert_currency=True):
+        """
+        Function returns EBITDA.
+        EARNINGS BEFORE INTEREST, TAXES, DEPRECIATION & AMORTIZATION (EBITDA) represent the earnings
+        of a company before interest expense, income taxes and depreciation. It is calculated by taking the pre-tax
+        income and adding back interest expense on debt and depreciation, depletion and amortization and
+        subtracting interest capitalized.
+        
+       :param period: str, default 'A'
+                    period type (NOT pandas standard) to retrive from,
+                    either annual type ['A','B','G'] or quarterly type ["E","Q","H","I","R","@"]
+        :param exact_match_allowed: bool, default True
+                    - If True, allow matching with the same 'on' value
+                      (i.e. less-than-or-equal-to / greater-than-or-equal-to)
+                    - If False, don't match the same 'on' value
+                      (i.e., strictly less-than / strictly greater-than).
+        :param convert_currency: bool, default True
+                            - If True, convert added feature's currency to `to_currency`
+                            - If False, keep as a currency aware object (XMoney)
+        :returns:
+        """
+        db_column_name = 'ebit___depreciation'
+        self._warn_if_overwriting_and_delete('ebitda')
+        qad = ResourceManager().qad
+
+        feature_panel = qad.get_worldscope_feature(self._obj, feature_name='ebitda', feature_code=18198, period=period,
+                                                   exact_match_allowed=exact_match_allowed, convert_currency=convert_currency,
+                                                   is_security_level=False, db_column_name=db_column_name)
+
+        self._obj = self._obj.merge(feature_panel, on=self.unit_key + self.time_key, how='left')
+        return self._obj
+
+    def earnings_per_share(self, period='A', exact_match_allowed=True, convert_currency=True, diluted_earnings=True):
+        """adds the worldscope "Earnings Per Share" to the panel as `earnings_per_share`
+
+        EARNINGS PER SHARE represents the earnings for the 12 months ended the last calendar quarter of the year
+        for U.S. corporations and the fiscal year for non-U.S. corporations It represents the fully diluted earnings per
+        share (field 05290) for US companies and basic earnings per share (field 05210) for other companies.
+
+        :param period: str, period type (NOT pandas standard) to retrive net cash from,
+            either annual type ['A','B','G'] or quarterly type ["E","Q","H","I","R","@"]
+        :param exact_match_allowed: bool. Allow same day merges, if False joins with previous date
+        :param convert_currency: Bool, if True converts all values to USD (scalar),
+            if False keep as currency aware object (XMoney module)
+        """
+        self._warn_if_overwriting_and_delete('earnings_per_share')
+        qad = ResourceManager().qad
+
+        if diluted_earnings:
+            feature_code = 5290
+            db_column_name = 'earnings_per_share___fully_diluted_shares___year'
+        else:
+            feature_code = 5210
+            db_column_name = 'earnings_per_share___basic___year'
+
+        feature_panel = qad.get_worldscope_feature(self._obj, feature_name='earnings_per_share',
+                                                   feature_code=feature_code,
+                                                   period=period,
+                                                   exact_match_allowed=exact_match_allowed,
+                                                   convert_currency=convert_currency,
+                                                   is_security_level=False, db_column_name=db_column_name)
+
+        self._obj = self._obj.merge(feature_panel, on=self.unit_key + self.time_key, how='left')
+        return self._obj
+
+    def ebitda_margin(self, period='A', exact_match_allowed=True):
+        """
+        EBITDA margin = EBITDA/Sales
+
+        :param period: str, period type (NOT pandas standard) to retrieve net cash from,
+            either annual type ['A','B','G'] or quarterly type ["E","Q","H","I","R","@"]
+        :param exact_match_allowed: bool, default True
+                    - If True, allow matching with the same 'on' value
+                      (i.e. less-than-or-equal-to / greater-than-or-equal-to)
+                    - If False, don't match the same 'on' value
+                      (i.e., strictly less-than / strictly greater-than).
+        """
+        df = self._obj[self.unit_key + ['date']].copy()
+        df = df.features.ebitda(period=period, exact_match_allowed=exact_match_allowed, convert_currency=True)
+        df = df.features.sales(period=period, exact_match_allowed=exact_match_allowed, convert_currency=True)
+
+        df['ebitda_margin'] = df['ebitda'] / df['sales']
+
+        self._obj = df.features._asof_merge_feature(df[self.unit_key + ['date', 'ebitda_margin']],
+                                                    'ebitda_margin',
+                                                    exact_match_allowed=exact_match_allowed)
+        return self._obj

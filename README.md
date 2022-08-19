@@ -1,6 +1,6 @@
 # Overview
 
-`ctrlaltdata` is a data access layer written and used by Barclays Investment Bank's Research Data Science team is designed to work with "alternative data" for the purpose of informing financial research.
+`ctrlaltdata` is a data access layer written and used by Barclays Investment Bank's Research Data Science team. It is designed to work with "alternative data" for the purpose of informing financial research.
 
 To this end, the tool has several objectives:
 1.	To read data from many data sources, including flat files on s3, SQL databases, and APIs;
