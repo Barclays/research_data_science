@@ -1235,13 +1235,13 @@ class Features():
                     - If False, don't match the same 'on' value
                       (i.e., strictly less-than / strictly greater-than).
         """
-        df = self._obj[self.unit_key + ['date']].copy()
+        panel_key = self.unit_key + self.time_key
+        df = self._obj[panel_key].copy()
         df = df.features.ebitda(period=period, exact_match_allowed=exact_match_allowed, convert_currency=True)
         df = df.features.sales(period=period, exact_match_allowed=exact_match_allowed, convert_currency=True)
 
         df['ebitda_margin'] = df['ebitda'] / df['sales']
 
-        self._obj = df.features._asof_merge_feature(df[self.unit_key + ['date', 'ebitda_margin']],
-                                                    'ebitda_margin',
-                                                    exact_match_allowed=exact_match_allowed)
+        self._obj = self._obj.merge(df[panel_key + ['ebitda_margin']],
+                                    on=panel_key, how='left')
         return self._obj
