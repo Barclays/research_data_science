@@ -952,24 +952,15 @@ class Features():
             if False keep as currency aware object (XMoney module)
         :returns: Panel with `dividends_per_share` added to the columns.
         """
+        self._warn_if_overwriting_and_delete('dividends_per_share')
         qad = ResourceManager().qad
-        if "worldscope_key" not in self._obj.columns:
-            self._obj = qad.worldscope_key(self._obj)
-        worldscope_keys = self._obj[~self._obj.worldscope_key.isna()].worldscope_key.unique()
-        feature = qad.worldscope_add_last_actual(
-            worldscope_keys, period='A', metric_code=5101, exact_match_allowed=exact_match_allowed)
-        self._obj.loc[self._obj.worldscope_key.isna(), 'worldscope_key'] = -99
+        feature_panel = qad.get_worldscope_feature(self._obj, feature_name='dividends_per_share', feature_code=5101,
+                                                   period='A',
+                                                   exact_match_allowed=exact_match_allowed,
+                                                   convert_currency=convert_currency,
+                                                   is_security_level=True)
 
-        self._obj = self._asof_merge_feature(feature,
-                                      'dividends_per_share',
-                                      on='date',
-                                      by=['worldscope_key'],
-                                      exact_match_allowed=exact_match_allowed)
-        self._obj.drop(columns=['worldscope_key'], inplace=True)
-        metric_name = 'dividends_per_share'
-        if convert_currency:
-            self._obj = self._obj.units.convert_currency_aware_column(
-                metric=metric_name, exact_day_match=True)
+        self._obj = self._obj.merge(feature_panel, on=self.unit_key + self.time_key, how='left')
         return self._obj
 
     def dividend_yield(self, exact_match_allowed=True):
@@ -1218,7 +1209,7 @@ class Features():
                                                    period=period,
                                                    exact_match_allowed=exact_match_allowed,
                                                    convert_currency=convert_currency,
-                                                   is_security_level=False, db_column_name=db_column_name)
+                                                   is_security_level=True, db_column_name=db_column_name)
 
         self._obj = self._obj.merge(feature_panel, on=self.unit_key + self.time_key, how='left')
         return self._obj
@@ -1243,5 +1234,203 @@ class Features():
         df['ebitda_margin'] = df['ebitda'] / df['sales']
 
         self._obj = self._obj.merge(df[panel_key + ['ebitda_margin']],
+                                    on=panel_key, how='left')
+        return self._obj
+
+    def return_on_equity(self, period='A', exact_match_allowed=True):
+        """
+        Returns historic return on equity defined as EPS/BVPS on a security level. Uses GAAP/unadjusted diluted EPS
+
+        :param period: str, period type (NOT pandas standard) to retrieve return on equity from,
+            either annual type ['A','B','G'] or quarterly type ["E","Q","H","I","R","@"]
+        :param exact_match_allowed: bool, default True
+                    - If True, allow matching with the same 'on' value
+                      (i.e. less-than-or-equal-to / greater-than-or-equal-to)
+                    - If False, don't match the same 'on' value
+                      (i.e., strictly less-than / strictly greater-than).
+        :returns: Panel with `return_on_equity` field
+        """
+        panel_key = self.unit_key + self.time_key
+        qad = ResourceManager().qad
+        feature_panel = qad.get_worldscope_feature(self._obj, feature_name='book_value_per_share', feature_code=5476,
+                                                   period='A', exact_match_allowed=exact_match_allowed,
+                                                   convert_currency=True, is_security_level=True)
+        feature_panel = feature_panel.features.earnings_per_share(period=period,
+                                                                  exact_match_allowed=exact_match_allowed,
+                                                                  convert_currency=True)
+
+        feature_panel['return_on_equity'] = feature_panel['earnings_per_share'] / feature_panel['book_value_per_share']
+
+        self._obj = self._obj.merge(feature_panel[panel_key + ['return_on_equity']],
+                                    on=panel_key, how='left')
+        return self._obj
+
+    def return_on_tangible_equity(self, period='A', exact_match_allowed=True):
+        """
+        Returns historic return on tangible equity, defined as EPS/Tangible Book Value Per Share.
+
+        :param period: str, period type (NOT pandas standard) to retrieve return on tangible equity from,
+            either annual type ['A','B','G'] or quarterly type ["E","Q","H","I","R","@"]
+        :param exact_match_allowed: bool, default True
+                    - If True, allow matching with the same 'on' value
+                      (i.e. less-than-or-equal-to / greater-than-or-equal-to)
+                    - If False, don't match the same 'on' value
+                      (i.e., strictly less-than / strictly greater-than).
+        :returns: Panel with `return_on_tangible_equity` field
+        """
+        panel_key = self.unit_key + self.time_key
+        qad = ResourceManager().qad
+        feature_panel = qad.get_worldscope_feature(self._obj, feature_name='tangible_book_value_per_share', feature_code=5486,
+                                                   period='A', exact_match_allowed=exact_match_allowed,
+                                                   convert_currency=True, is_security_level=True)
+        feature_panel = feature_panel.features.earnings_per_share(period=period,
+                                                                  exact_match_allowed=exact_match_allowed,
+                                                                  convert_currency=True)
+
+        feature_panel['return_on_tangible_equity'] = feature_panel['earnings_per_share'] / feature_panel['tangible_book_value_per_share']
+
+        self._obj = self._obj.merge(feature_panel[panel_key + ['return_on_tangible_equity']],
+                                    on=panel_key, how='left')
+        return self._obj
+
+    def buyback_yield(self, period='A', exact_match_allowed=True, convert_currency=True):
+        """
+        Returns the yield of cashflow towards repurchases of common shares in the previous period,
+        as well as conversion/purchase of preferences shares/treasury shares
+
+       :param period: str, default 'A'
+                    period type (NOT pandas standard) to retrive from,
+                    either annual type ['A','B','G'] or quarterly type ["E","Q","H","I","R","@"]
+        :param exact_match_allowed: bool, default True
+                    - If True, allow matching with the same 'on' value
+                      (i.e. less-than-or-equal-to / greater-than-or-equal-to)
+                    - If False, don't match the same 'on' value
+                      (i.e., strictly less-than / strictly greater-than).
+        :param convert_currency: bool, default True
+                            - If True, convert added feature's currency to `to_currency`
+                            - If False, keep as a currency aware object (XMoney)
+        :returns: panel with `buyback_yield` field
+        """
+        panel_key = self.unit_key + self.time_key
+        db_column_name = 'common_preferred_redeemed__retired__converted__etc_'
+        self._warn_if_overwriting_and_delete('buyback_yield')
+        qad = ResourceManager().qad
+
+        feature_panel = qad.get_worldscope_feature(self._obj, feature_name='buybacks', feature_code=4751, period=period,
+                                                   exact_match_allowed=exact_match_allowed, convert_currency=convert_currency,
+                                                   is_security_level=True, db_column_name=db_column_name)
+
+        feature_panel = feature_panel.features.closing_price(adj_type=0, exact_day_match=exact_match_allowed,
+                                                             convert_currency=True, to_currency='USD')
+        feature_panel['buyback_yield'] = feature_panel['buybacks'] / feature_panel['closing_price']
+        self._obj = self._obj.merge(feature_panel[panel_key + ['buyback_yield']],
+                                    on=panel_key, how='left')
+        return self._obj
+
+    def free_cash_flow(self, period='A', exact_match_allowed=True, convert_currency=True):
+        """
+        Returns Free Cash Flow, defined as Funds from Operations - Capital Expenditures.
+        Do not use available field Free Cash Flow Per Share from Worldscope (field 05507) as this field 
+        subtracts Cash Dividends Paid (field 04551) which is not our standard.
+        
+        For IFRS accounts, we do not include acquisition of intangibles /capitalised R&D in the 
+        capital expenditures used.
+
+        :param period: str, default 'A'
+                    period type (NOT pandas standard) to retrive from,
+                    either annual type ['A','B','G'] or quarterly type ["E","Q","H","I","R","@"]
+        :param exact_match_allowed: bool, default True
+                    - If True, allow matching with the same 'on' value
+                      (i.e. less-than-or-equal-to / greater-than-or-equal-to)
+                    - If False, don't match the same 'on' value
+                      (i.e., strictly less-than / strictly greater-than).
+        :param convert_currency: bool, default True
+                            - If True, convert added feature's currency to `to_currency`
+                            - If False, keep as a currency aware object (XMoney)
+        :returns: panel with `free_cash_flow` column
+        """
+        panel_key = self.unit_key + self.time_key
+        self._warn_if_overwriting_and_delete('free_cash_flow')
+        qad = ResourceManager().qad
+
+        funds_from_operation = qad.get_worldscope_feature(self._obj, feature_name='funds_from_operations',
+                                                          feature_code=4201,
+                                                          period=period,
+                                                          exact_match_allowed=exact_match_allowed,
+                                                          convert_currency=convert_currency,
+                                                          is_security_level=False, db_column_name=None)
+
+        capital_expenditures = qad.get_worldscope_feature(self._obj, feature_name='capital_expenditures',
+                                                          feature_code=4601,
+                                                          period=period,
+                                                          exact_match_allowed=exact_match_allowed,
+                                                          convert_currency=convert_currency,
+                                                          is_security_level=False,
+                                                          db_column_name='capital_expenditures__additions_to_fixed_assets_')
+
+        feature_panel = funds_from_operation.merge(capital_expenditures, on=panel_key)
+        feature_panel['free_cash_flow'] = feature_panel['funds_from_operations'] - feature_panel['capital_expenditures']
+        self._obj = self._obj.merge(feature_panel[panel_key + ['free_cash_flow']],
+                                    on=panel_key, how='left')
+        return self._obj
+
+    def free_cash_flow_conversion_ratio(self, period='A', exact_match_allowed=True):
+        """
+        Returns Free Cash Flow, defined as Free Cash Flow / EBITDA.
+        Represents how efficiently does the company convert EBITDA to cash.
+
+        :param period: str, default 'A'
+                    period type (NOT pandas standard) to retrieve from,
+                    either annual type ['A','B','G'] or quarterly type ["E","Q","H","I","R","@"]
+        :param exact_match_allowed: bool, default True
+                    - If True, allow matching with the same 'on' value
+                      (i.e. less-than-or-equal-to / greater-than-or-equal-to)
+                    - If False, don't match the same 'on' value
+                      (i.e., strictly less-than / strictly greater-than).
+        :returns: panel with `free_cash_flow_conversion_ratio` column
+        """
+        panel_key = self.unit_key + self.time_key
+        df = self._obj[panel_key].copy()
+        df = df.features.ebitda(period=period, exact_match_allowed=exact_match_allowed, convert_currency=True)
+        df = df.features.free_cash_flow(period=period, exact_match_allowed=exact_match_allowed, convert_currency=True)
+
+        df['free_cash_flow_conversion_ratio'] = df['free_cash_flow'] / df['ebitda']
+
+        self._obj = self._obj.merge(df[panel_key + ['free_cash_flow_conversion_ratio']],
+                                    on=panel_key, how='left')
+        return self._obj
+    
+    def free_cash_flow_yield(self, period='A', exact_match_allowed=True):
+        """
+        Returns Free Cash Flow Yield, calculated as Free Cash Flow Per Share / Share Price.
+
+        :param period: str, default 'A'
+                    period type (NOT pandas standard) to retrive from,
+                    either annual type ['A','B','G'] or quarterly type ["E","Q","H","I","R","@"]
+        :param exact_match_allowed: bool, default True
+                    - If True, allow matching with the same 'on' value
+                      (i.e. less-than-or-equal-to / greater-than-or-equal-to)
+                    - If False, don't match the same 'on' value
+                      (i.e., strictly less-than / strictly greater-than).
+        :returns: panel with `free_cash_flow_yield` column
+        """
+        panel_key = self.unit_key + self.time_key
+        df = self._obj[panel_key].copy()
+        qad = ResourceManager().qad
+        
+        fcf_per_share = qad.get_worldscope_feature(self._obj, feature_name='free_cash_flow_per_share',
+                                                   feature_code=5507,
+                                                   period=period,
+                                                   exact_match_allowed=exact_match_allowed,
+                                                   convert_currency=True,
+                                                   is_security_level=True, db_column_name=None)
+
+        feature_panel = fcf_per_share.features.dividends_per_share(exact_match_allowed=exact_match_allowed, convert_currency=True)
+        feature_panel['free_cash_flow_per_share'] = feature_panel['free_cash_flow_per_share'] + feature_panel['dividends_per_share']
+        feature_panel = feature_panel.features.closing_price(adj_type=0, exact_day_match=exact_match_allowed,
+                                                               convert_currency=True, to_currency='USD')
+        feature_panel['free_cash_flow_yield'] = feature_panel['free_cash_flow_per_share'] / feature_panel['closing_price']
+
+        self._obj = self._obj.merge(feature_panel[panel_key + ['free_cash_flow_yield']],
                                     on=panel_key, how='left')
         return self._obj
