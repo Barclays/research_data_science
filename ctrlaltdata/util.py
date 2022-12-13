@@ -36,7 +36,29 @@ def create_depends_on(enabled_modules):
         return decorator_depends_on
     return depends_on
 
+
+def create_source_finder(enabled_modules):
+    def source_finder(priority_list):
+        def decorator_source_finder(func):
+            @wraps(func)
+            def wrapper_source_finder(*args, **kwargs):
+                priority_source = kwargs.get('source', None)
+                if not priority_source:
+                    priority_source = next((s for s in priority_list if s in enabled_modules), None)
+                    if not priority_source:
+                        raise NotEnabledException("No module in the priority list is enabled")
+                    kwargs['source'] = priority_source
+                else:
+                    if priority_source not in enabled_modules:
+                        raise NotEnabledException(f"Specified source {priority_source} not enabled in configuration")
+                return func(*args, **kwargs)
+            return wrapper_source_finder
+        return decorator_source_finder
+    return source_finder
+
+
 depends_on = create_depends_on(enabled_modules)
+source_finder = create_source_finder(enabled_modules)
 
 
 def cusip_abbrev_to_full(cusip8):

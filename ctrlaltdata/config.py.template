@@ -12,11 +12,15 @@ import pyodbc
 # Add in the list below the database modules which you want to enable
 # and work with using this repository.
 # You should also remove any data sources which are not set-up
-enabled_modules = ['qad']
+enabled_modules = ['qad', 'compustat']
 
 # We expect QAD is on a server accessible by the local machine.
 # Uncomment and modify the qad connection string variable below
 # QAD_CONNECTION_STRING = (
+#     "DRIVER=;Server=;Database=;port=;"
+#     "UID=;PWD=;"
+# )
+# COMPUSTAT_CONNECTION_STRING = (
 #     "DRIVER=;Server=;Database=;port=;"
 #     "UID=;PWD=;"
 # )
@@ -28,8 +32,19 @@ enabled_modules = ['qad']
 # DATE_STRING_FORMAT_QAD = "%Y-%m-%d"
 # This format for North American
 DATE_STRING_FORMAT_QAD = "%Y-%m-%d"
+# This format is used for Compustat queries
+DATE_STRING_FORMAT_COMPUSTAT = "%Y-%m-%d"
 
 # Some parts of this repository import PySpark modules
 # Use the below boolean flag to according to whether you have Pyspark
 # installed on your machine
 spark_installed = True
+
+# Some modules require configuring a proxy when working on an internal
+# network which blocks external internet traffic. FRED is such a module.
+# Use the below dictionary to define http and https proxy strings.
+proxy_dict = {}
+
+# The FRED module requires obtaining an API key, which needs to be defined below.
+# You can get your own key from https://fred.stlouisfed.org/docs/api/api_key.html
+fred_api_key = ""

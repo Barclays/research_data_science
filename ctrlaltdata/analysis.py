@@ -31,7 +31,52 @@ class AnalysisAccessor(object):
         if 'security_key' not in obj.columns and 'security_key_name' not in obj.columns:
             raise AttributeError("Must have security key columns.")
         if 'date' not in obj.columns:
-            logging.warning("No 'date' in dataframe. Won't be able to asof merge.")
+            logging.warning(
+                "No 'date' in dataframe. Won't be able to asof merge.")
+
+    def auto_select_monthly_offset_function(self, n_months):
+        """This function select a pandas tseries offset function based on the the pandas period type.
+        I.e. Month end formatted panels will maintain month end format when lagged.
+        Business calendar panels are also supported as well as daily and yearly panels.
+        :returns: a Pandas tseries offset function, offsetting by n_months
+        :param n_months: int, number of months to offset by
+        """
+
+        freq = pd.infer_freq(self._obj.sort_values(
+            'date').date.drop_duplicates())
+        if not freq:
+            logging.warning(
+                "could not detect panel frequency so using simple months")
+
+        if freq in ['M', 'Q'] or "A-" in freq or "Q-" in freq:
+            return pd.tseries.offsets.MonthEnd(n=n_months)
+        elif freq in ['BM', 'BA', 'BY']:
+            return pd.tseries.offsets.BusinessMonthEnd(n=n_months)
+        elif freq in ['BMS', 'BAS', 'BYS']:
+            return pd.tseries.offsets.BusinessMonthBegin(n=n_months)
+        else:
+            return pd.tseries.offsets.DateOffset(months=n_months)
+
+    def auto_select_panel_generator_monthly_frequency(self):
+        """
+        This function infers which pandas frequency should be used to generate a panel for monthly offset values
+        :returns: a pandas frequency string
+        """
+        panel_freq = pd.infer_freq(
+            self._obj.sort_values('date').date.drop_duplicates())
+
+        # infer the frequency to generate
+        if panel_freq in ['M', 'Q'] or "A-" in panel_freq or "Q-" in panel_freq:
+            month_freq = 'M'
+        elif panel_freq in ['MS', 'QS'] or "AS-" in panel_freq or "QS-" in panel_freq:
+            month_freq = 'MS'
+        elif panel_freq in ['BM', 'BA', 'BY']:
+            month_freq = 'BM'
+        elif panel_freq in ['BMS', 'BAS', 'BYS']:
+            month_freq = 'BMS'
+        else:
+            month_freq = panel_freq
+        return month_freq
 
     def add_lagged_feature_on_date_by_key(self, feature_name, key=['security_key', 'security_key_name'], lag=1, freq=None):
         """
@@ -51,11 +96,15 @@ class AnalysisAccessor(object):
         same as the old column name, but with `f'_lag({lag})'` appended to it.
         """
         self._obj = self._obj.sort_values('date')
-        self._obj.loc[:, f'{feature_name}_lag({lag})'] = pd.Series(self._obj[feature_name], index=self._obj.index)
+        self._obj.loc[:, f'{feature_name}_lag({lag})'] = pd.Series(
+            self._obj[feature_name], index=self._obj.index)
+
         def shift_column(df, column=f'{feature_name}_lag({lag})', shift=lag):
-            df.loc[:, column] = pd.Series(df[column].shift(shift, freq=freq), index=df.index)
+            df.loc[:, column] = pd.Series(
+                df[column].shift(shift, freq=freq), index=df.index)
             return df
-        self._obj = self._obj.groupby(key).apply(shift_column).reset_index(drop=True) # [TODO: throws a warning. fix it!]
+        self._obj = self._obj.groupby(key).apply(shift_column).reset_index(
+            drop=True)  # [TODO: throws a warning. fix it!]
         return self._obj
 
     def add_offset_lagged_feature_on_date_by_key(self, feature_name, key=['security_key', 'security_key_name'],
@@ -69,6 +118,10 @@ class AnalysisAccessor(object):
         Pandas's `shift` is a little tricky, since it doesn't always respect time ordering and indexing. This method
         makes time lagging by security more failure resistant.
 
+        User should select an offset function that respects the frequency type of their panel. 
+        If the panel was constructed using pandas conventions/ pandas.date_range(),
+            the function auto_select_monthly_offset_function can detect the best offset to use to feed into this
+
         :param feature_name: A string indicating the name of the feature to shift.
         :param key: A list of strings indicating the multi-key describing the unit of analysis.
         :param offset: A `pandas.tseries.offset` or similar object (e.g. a timedelta) which indicates the lag period.
@@ -76,10 +129,13 @@ class AnalysisAccessor(object):
         :return self._obj: The dataframe with a new column containing the shifted values. The new column name is the
         same as the old column name, but with `f'_lag({offset})'` appended to it.
         """
-        logging.warning("Caution! Month lagging with DateOffset can be unintuitive near month ends.")
+        if type(offset) == pd._libs.tslibs.offsets.DateOffset:
+            logging.warning(
+                "Caution! Month lagging with DateOffset can be unintuitive near month ends.")
         shifted = self._obj[key + ['date', feature_name]].copy()
-        shifted.rename(columns={feature_name: f'{feature_name}_lag({offset})'}, inplace=True)
-        shifted.loc[:,'date'] = [i + offset for i in shifted.loc[:, 'date']]
+        shifted.rename(
+            columns={feature_name: f'{feature_name}_lag({offset})'}, inplace=True)
+        shifted.loc[:, 'date'] = [i + offset for i in shifted.loc[:, 'date']]
         return self._obj.features._asof_merge_feature(shifted, f'{feature_name}_lag({offset})', by=key)
 
     def _mean_center(self, feature_names, subpanel, key=['gic4']):
@@ -97,16 +153,18 @@ class AnalysisAccessor(object):
         subpanel = subpanel.copy()
         if type(key) == str:
             key = [key]
-        panel_mean = subpanel[subpanel.in_index == 1].groupby(key + ['date']).mean()
-        panel_mean = panel_mean.rename(columns={col: col + '_mean' for col in panel_mean.columns})
+        panel_mean = subpanel[subpanel.in_index ==
+                              1].groupby(key + ['date']).mean()
+        panel_mean = panel_mean.rename(
+            columns={col: col + '_mean' for col in panel_mean.columns})
 
         centered_panel = subpanel.copy()
         centered_panel = centered_panel.set_index(key + ['date'], drop=True)
 
         centered_panel = centered_panel.merge(panel_mean, on=key + ['date'])
         centered_panel[feature_names] = centered_panel[feature_names] - \
-                                        centered_panel[[col + '_mean' for col in feature_names]] \
-                                            .rename(columns={col + '_mean': col for col in feature_names})
+            centered_panel[[col + '_mean' for col in feature_names]] \
+            .rename(columns={col + '_mean': col for col in feature_names})
         for col in panel_mean.columns:
             del centered_panel[col]
 
@@ -134,10 +192,12 @@ class AnalysisAccessor(object):
                 return series
 
             subpanel = subpanel.analysis.apply_f_on_date_by_key(feature_name,
-                                                                  std,
-                                                                  key=key + ['in_index'],
-                                                                  suffix='_std')
-            subpanel[feature_name] = subpanel[feature_name] / subpanel[f'{feature_name}_std']
+                                                                std,
+                                                                key=key +
+                                                                ['in_index'],
+                                                                suffix='_std')
+            subpanel[feature_name] = subpanel[feature_name] / \
+                subpanel[f'{feature_name}_std']
             del subpanel[f'{feature_name}_std']
         return subpanel
 
@@ -166,9 +226,11 @@ class AnalysisAccessor(object):
         else:
             indexer = self._obj.index
         group_key = self._obj.features.time_key + key
-        result = self._obj.loc[indexer].groupby(group_key).apply(lambda x: f(x[feature_name], *args, **kwargs))
+        result = self._obj.loc[indexer].groupby(group_key).apply(
+            lambda x: f(x[feature_name], *args, **kwargs))
         self._obj.loc[indexer, prefix + feature_name + suffix] = \
-        result.reset_index(level=[i for i in range(len(group_key))])[feature_name]
+            result.reset_index(level=[i for i in range(len(group_key))])[
+            feature_name]
         return self._obj
 
     def rank_on_date_by_key(self, feature_name, key=[], ascending=True, in_index=True):
@@ -281,41 +343,43 @@ class AnalysisAccessor(object):
                 sc = pyspark.SparkContext.getOrCreate()
             df = sc.broadcast(df)
             return self.apply_time_windowed_functions_spark(functions, args, sc=sc, partitions=partitions,
-                                      prediction_steps=prediction_steps, lookback=lookback,
-                                      train_lt=train_lt, burn_in_steps=burn_in_steps, df=df, n_jobs=n_jobs)
+                                                            prediction_steps=prediction_steps, lookback=lookback,
+                                                            train_lt=train_lt, burn_in_steps=burn_in_steps, df=df, n_jobs=n_jobs)
         else:
             return self.apply_time_windowed_functions_serial(functions, args, sc=sc, partitions=partitions,
-                                      prediction_steps=prediction_steps, lookback=lookback,
-                                      train_lt=train_lt, burn_in_steps=burn_in_steps, df=df, n_jobs=n_jobs)
-    
+                                                             prediction_steps=prediction_steps, lookback=lookback,
+                                                             train_lt=train_lt, burn_in_steps=burn_in_steps, df=df, n_jobs=n_jobs)
+
     def apply_time_windowed_functions_spark(self, functions, args, sc=None, partitions=None,
-                                      prediction_steps=1, lookback=datetime.timedelta(days=100*365),
-                                      train_lt='', burn_in_steps=0, df=None, n_jobs=10):
+                                            prediction_steps=1, lookback=datetime.timedelta(days=100*365),
+                                            train_lt='', burn_in_steps=0, df=None, n_jobs=10):
         logging.info("using spark version.")
         dates = sc.parallelize([([df, date_info], [df, date_info]) for date_info in self.generate_dates(prediction_steps=prediction_steps, lookback=lookback,
-                                  train_lt=train_lt, burn_in_steps=burn_in_steps) if date_info], n_jobs)
-        to_run = dates.mapValues(self.temporal_split_panel).map(lambda x: list(x[0]) + list(x[1]) + list(args))
+                                                                                                        train_lt=train_lt, burn_in_steps=burn_in_steps) if date_info], n_jobs)
+        to_run = dates.mapValues(self.temporal_split_panel).map(
+            lambda x: list(x[0]) + list(x[1]) + list(args))
         results = {}
         for function in functions:
             results[function.__name__] = to_run.map(function).collect()
         return results
 
     def apply_time_windowed_functions_serial(self, functions, args, sc=None, partitions=None,
-                                      prediction_steps=1, lookback=datetime.timedelta(days=100*365),
-                                      train_lt='', burn_in_steps=0, df=None, n_jobs=10):
+                                             prediction_steps=1, lookback=datetime.timedelta(days=100*365),
+                                             train_lt='', burn_in_steps=0, df=None, n_jobs=10):
         logging.info("using serial version.")
         dates = [[df, date_info] for date_info in self.generate_dates(prediction_steps=prediction_steps, lookback=lookback,
-                                  train_lt=train_lt, burn_in_steps=burn_in_steps) if date_info]
+                                                                      train_lt=train_lt, burn_in_steps=burn_in_steps) if date_info]
         to_run = list(map(lambda x: list(x[0]) + list(x[1]) + args,
-                     [(t[:2], x) for t, x in zip(dates, map(self.temporal_split_panel, dates))]))
+                          [(t[:2], x) for t, x in zip(dates, map(self.temporal_split_panel, dates))]))
         results = {}
         for function in functions:
             logging.info(f"running {function.__name__}.")
-            results[function.__name__] = [i for i in tqdm.tqdm(map(function, to_run))]
+            results[function.__name__] = [
+                i for i in tqdm.tqdm(map(function, to_run))]
         return results
 
     def generate_dates(self, prediction_steps=1, lookback=datetime.timedelta(days=365 * 100),
-                                  train_lt='', burn_in_steps=0):
+                       train_lt='', burn_in_steps=0):
         """
         This method is used by our point-in-time analysis tools to generate a sequence of dates on which to slice a
         panel. It returns a map containing, for each time step to be analyzed (considered the "present"), the present
@@ -349,7 +413,8 @@ class AnalysisAccessor(object):
         df, date_info = x
         if spark_installed:
             df = df.value
-        past = df[(df.date <= date_info["past_end"]) & (df.date >= date_info["past_begin"])].copy()
+        past = df[(df.date <= date_info["past_end"]) & (
+            df.date >= date_info["past_begin"])].copy()
         if date_info["train_lt"]:  # account for lookahead information in the indep vars
             past = past[past[date_info["train_lt"]] < date_info["past_end"]]
         present = df[df.date == date_info["present_date"]].copy()
@@ -372,5 +437,6 @@ class AnalysisAccessor(object):
         """
         for variable in variable_names:
             if pd.api.types.is_numeric_dtype(df.loc[:, variable]):
-                df.loc[:, [variable]] = df[variable].fillna(df[variable].mean())
+                df.loc[:, [variable]] = df[variable].fillna(
+                    df[variable].mean())
         return df

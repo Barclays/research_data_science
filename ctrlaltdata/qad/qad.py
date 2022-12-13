@@ -153,6 +153,27 @@ class QAD(SqlReader):
             str).apply(lambda x: '{0:0>6}'.format(x))
         return combined
 
+    def get_gvkey_from_secintcode(self, secintcodes):
+        """Query to map secintcode to gvkey, both compustat identifiers for North america.
+        This is not a PIT mapping"""
+        gvkeys_NA = self.query("""select secintcode, gvkey,'cusip' as security_key_name from CSVSecurity
+            where secintcode in ({codes})""".format(codes=",".join(["'{}'".format(i) for i in secintcodes])))
+        gvkeys_NA.loc[:, 'secintcode'] = gvkeys_NA.loc[:,
+                                                       'secintcode'].astype(str)
+        gvkeys_NA.loc[:, 'gvkey'] = gvkeys_NA['gvkey'].astype(
+            str).apply(lambda x: '{0:0>6}'.format(x))
+        return gvkeys_NA
+
+    def get_gvkey_from_secid(self, secid):
+        """Query to map seciid to gvkey, both compustat identifiers for ROW.
+        This is not a PIT mapping"""
+        gvkeys_ROW = self.query("""select secid, gvkey, 'sedol' as  security_key_name from CSGSec
+            where secid in ({codes})""".format(codes=",".join(["'{}'".format(i) for i in secid])))
+        gvkeys_ROW.loc[:, 'secid'] = gvkeys_ROW.loc[:, 'secid'].astype(str)
+        gvkeys_ROW.loc[:, 'gvkey'] = gvkeys_ROW['gvkey'].astype(
+            str).apply(lambda x: '{0:0>6}'.format(x))
+        return gvkeys_ROW
+
     def get_seccode_by_keys(self, cusip, sedol):
         if len(sedol) == 0:
             sedol = ['']
@@ -249,7 +270,7 @@ class QAD(SqlReader):
             [main_query.reset_index(), invert_query.reset_index()])
         result['date'] = pd.to_datetime(result['date'])
         return result
-    
+
     def get_consolidated_share_count_since_until_by_cusip_sedol(self, since, until, cusip, sedol):
         if len(sedol) == 0:
             sedol = ['']
@@ -338,7 +359,7 @@ class QAD(SqlReader):
                    cusips=",".join(["'{}'".format(i) for i in cusip]),
                    sedols=",".join(["'{}'".format(i) for i in sedol]))
         return self.query(query)
-    
+
     def get_market_cap_since_until_by_cusip_sedol(self, since, until, cusip, sedol):
         if len(sedol) == 0:
             sedol = ['']
@@ -383,7 +404,7 @@ class QAD(SqlReader):
                    cusips=",".join(["'{}'".format(i) for i in cusip]),
                    sedols=",".join(["'{}'".format(i) for i in sedol]))
         return self.query(query)
-    
+
     def get_free_float_market_cap_since_until_by_cusip_sedol(self, since, until, cusip, sedol):
         if len(sedol) == 0:
             sedol = ['']
@@ -553,7 +574,7 @@ class QAD(SqlReader):
         if len(cusip) == 0:
             cusip = ['']
         # for the mapping to be logical, need to match on same typ
-        query="""
+        query = """
         SELECT 
             CASE WHEN mastX.cusip IS NOT NULL THEN
 			    CASE
@@ -624,13 +645,14 @@ class QAD(SqlReader):
                     WHERE ((mastX.sedol IN ({sedols}) OR mastX.prevsedol IN ({sedols}))
                         OR (mastX.cusip IN ({cusips})OR mastX.prevcusip IN ({cusips})))
                         AND entity.EstPermID IS NOT NULL""".format(
-                    cusips=",".join(["'{}'".format(i) for i in cusip]),
-                    sedols=",".join(["'{}'".format(i) for i in sedol]))
+            cusips=",".join(["'{}'".format(i) for i in cusip]),
+            sedols=",".join(["'{}'".format(i) for i in sedol]))
         # sort query results by preference for matches
-        result=self.query(query).sort_values([ 'security_key_abbrev','IsPrimary','Rank','Exchange'],ascending=
-                [True,False,True,True])
-        filled_permid=~result['ibes_key'].isna()
-        result.loc[filled_permid,'ibes_key']=result.loc[filled_permid,'ibes_key'].astype(int).astype(str)
+        result = self.query(query).sort_values(
+            ['security_key_abbrev', 'IsPrimary', 'Rank', 'Exchange'], ascending=[True, False, True, True])
+        filled_permid = ~result['ibes_key'].isna()
+        result.loc[filled_permid, 'ibes_key'] = result.loc[filled_permid,
+                                                           'ibes_key'].astype(int).astype(str)
         return result
 
     def get_ibes_fp0_date(self,
@@ -706,7 +728,11 @@ class QAD(SqlReader):
                         EffectiveDate AS date,
                         PerEndDate AS period{period_type}_end_date_fp{forecast_period},
                         DefMeanEst*DefScale AS {metric_name},
-                        DefCurrPermID
+                        DefCurrPermID,
+                        NumEsts as {metric_name}_n_estimates,
+                        DefStdDev/NULLIF(DefMeanEst,0) as {metric_name}_pred_percent_std,
+                        DefHighEst*DefScale as {metric_name}_pred_high,
+                        DefLowEst*DefScale as {metric_name}_pred_low
                 FROM	dbo.TRESumPer
                 WHERE	PerType = {period_type}
                 AND		EstPermID IN ({ibes_keys})
@@ -813,25 +839,64 @@ class QAD(SqlReader):
         result = self.query(query)
         return result
 
-    def get_gvkey_to_gic_since_until(self, gvkeys, since, until):
-        query = """
-                   SELECT
-                          StartDate as since,
-                          EndDate as until,
-                          GvKey as gvkey,
-                          GSubInd as gic
-                   FROM
-                          SPG2HGICS
-                   WHERE --StartDate >= '{since}'
-                         --AND EndDate <= '{until}'
-                         --AND
-                         GvKey in ({gvkeys})
+    def get_gvkey_to_gic_since_until(self, NA_gvkeys,ROW_gvkeys,since, until):
+        # this table has European history
+        query_row = """
+                select
+                    C.gvkey,
+                    C.INDFROM as GICS_since, 
+                    C.INDTHRU as GICS_until, 
+                    C.GSUBIND as gic,
+                    R2.REFDESC AS SECTOR,
+                    R3.REFDESC AS 'GROUP',
+                    R4.REFDESC AS INDUSTRY, 
+                    R.REFDESC AS 'SUB-INDUSTRY' 
+                from CSGCOHGIC C
+                    JOIN CSGREF R ON C.GSUBIND = R.REFCD1 AND R.REFTYPE = 15
+                    JOIN CSGREF R2 ON C.GSECTOR = R2.REFCD1 AND R2.REFTYPE = 15
+                    JOIN CSGREF R3 ON C.GGROUP = R3.REFCD1 AND R3.REFTYPE = 15 
+	                JOIN CSGREF R4 ON C.GIND = R4.REFCD1 AND R4.REFTYPE = 15
+                where (C.INDTHRU IS NULL or C.INDTHRU >= '{since}')
+                AND (C.INDFROM <= '{until}')
+                         AND  C.gvkey in ({gvkeys})
+                   
                 """.format(since=since.strftime(DATE_STRING_FORMAT_QAD),
                            until=until.strftime(DATE_STRING_FORMAT_QAD),
-                           gvkeys=",".join(["'{}'".format(i) for i in gvkeys]))
-        result = self.query(query)
-        result['gvkey'] = result.gvkey.apply(lambda x: str(x) if len(
-            str(x)) == 6 else '0' * (6 - len(str(x))) + str(x))
+                           gvkeys=",".join(["'{}'".format(i) for i in ROW_gvkeys]))
+        #this table has North american history
+        query_na = """
+        SELECT 
+            g.gvkey,
+            G.STARTDATE as GICS_since, 
+            G.ENDDATE as GICS_until,
+            G.GSUBIND as gic,
+            C4.DESC_ AS 'SUB-INDUSTRY',
+            C1.DESC_ AS SECTOR, 
+            C2.DESC_ AS 'GROUP', 
+            C3.DESC_ AS INDUSTRY
+        FROM  DBO.SPG2HGICS G 
+            JOIN DBO.SPG2CODE C1 ON C1.CODE = LEFT(G.GSUBIND,2) AND C1.TYPE_ = 2
+            JOIN DBO.SPG2CODE C2 ON C2.CODE = LEFT(G.GSUBIND,4) AND C2.TYPE_ = 3
+            JOIN DBO.SPG2CODE C3 ON C3.CODE = LEFT(G.GSUBIND,6) AND C3.TYPE_ = 4
+            JOIN DBO.SPG2CODE C4 ON C4.CODE = G.GSUBIND AND C4.TYPE_ = 5
+            WHERE (G.ENDDATE IS NULL or G.ENDDATE >= '{since}')
+                AND (G.STARTDATE <= '{until}')
+                AND G.GVKEY in ({gvkeys}) ORDER BY G.STARTDATE    
+                """.format(since=since.strftime(DATE_STRING_FORMAT_QAD),
+                           until=until.strftime(DATE_STRING_FORMAT_QAD),
+                           gvkeys=",".join(["'{}'".format(i) for i in NA_gvkeys]))
+        result=pd.DataFrame()
+        if len(NA_gvkeys)>0:
+            result=pd.concat([result,self.query(query_na)])
+        if len(ROW_gvkeys)>0:
+            result=pd.concat([result,self.query(query_row)])
+        if not result.empty:
+            result['GICS_since'] = pd.to_datetime(
+                result['GICS_since'])
+            result['GICS_until'] = pd.to_datetime(
+                result['GICS_until'])
+            result['gvkey'] = result.gvkey.apply(lambda x: str(x) if len(
+                str(x)) == 6 else '0' * (6 - len(str(x))) + str(x))
         return result
 
     def get_sector_by_gic(self):
@@ -1012,12 +1077,13 @@ class QAD(SqlReader):
 
     def datastream_index_constituents(self, since, until, index_code):
         """ return the index constituents for an index in the datastream monthly index table"""
-        query = """select i.StartDate as in_index_since, 
-            ISNULL(i.EndDate, '{until}') as in_index_until,
-            i.infocode
-            from Ds2ConstMth i
-            where i.indexlistintcode='{index_code}'
-            AND ISNULL(i.EndDate, '{until}') >= '{since}'
+        query = """
+            select i.StartDate as in_index_since, 
+                ISNULL(i.EndDate, '{until}') as in_index_until,
+                i.infocode
+            from Ds2ConstMth i 
+                where i.indexlistintcode='{index_code}'
+                    AND ISNULL(i.EndDate, '{until}') >= '{since}'
             """.format(since=since.strftime(DATE_STRING_FORMAT_QAD),
                        until=until.strftime(DATE_STRING_FORMAT_QAD),
                        index_code=index_code)
@@ -1030,7 +1096,40 @@ class QAD(SqlReader):
         result['in_index_since'] = pd.to_datetime(result['in_index_since'])
         result['in_index_until'] = pd.to_datetime(result['in_index_until'])
         return result
-    
+
+    def datastream_index_weights(self, since, until, index_code):
+        """ return the index weights for an index in the datastream monthly index table"""
+        query = """
+            select  
+                w.infocode, 
+                w.Weight as index_weight,
+                w.Date_ as date
+            
+               from Ds2ConstDataMth w
+                where 
+                    w.indexlistintcode='{index_code}'
+                    and W.Date_<='{until}'
+                    and W.Date_>='{since}'
+            """.format(since=since.strftime(DATE_STRING_FORMAT_QAD),
+                       until=until.strftime(DATE_STRING_FORMAT_QAD),
+                       index_code=index_code)
+        result = self.query(query)
+        if not result[result.infocode.isna()].empty:
+            logging.warning(
+                'missing index infocodes - {}'.format(result[result.infocode.isna()]))
+            result = result[~result.infocode.isna()]
+            result.loc[:, 'infocode'] = result.loc[:, 'infocode'].astype(int)
+        result['date'] = pd.to_datetime(result['date'])
+        if result.empty:
+            logging.warning(
+                f'no index weights for this inndex code={index_code}, possible liscening issue')
+        else:
+            grouped=result.groupby('date')['index_weight'].sum()
+            one_bip_check=grouped[(grouped>100*1.0001)|(grouped<100*(1-.0001))]
+            if not one_bip_check.empty:
+                logging.warning("Index weights more than a basis point away from 100 percent on ".format(one_bip_check.date.unique()))
+        return result
+
     def datastream_index_name_search(self, search_term=None):
         """Query the Datastream table listing indexes available to search for all matching indexes
         If no search term given, return whole table"""
@@ -1090,11 +1189,11 @@ class QAD(SqlReader):
         result['startdate'] = pd.to_datetime(result['startdate'])
         result['enddate'] = pd.to_datetime(result['enddate'])
         return result
-    
-    def get_security_keys_from_infocodes_now(self,infocodes):
+
+    def get_security_keys_from_infocodes_now(self, infocodes):
         """Take the infocode (Datastream unique identifier) and return security_key_abbrev and security_key_name
         using the DataStream Mapping view"""
-        query="""select D.vencode as infocode,
+        query = """select D.vencode as infocode,
             CASE WHEN X.typ='1' THEN X.cusip 
                 ELSE X.sedol END as security_key_abbrev,
             CASE WHEN X.typ='1' THEN 'cusip'
@@ -1142,7 +1241,8 @@ class QAD(SqlReader):
 
         # want to keep itemUnits if either a 3 digit isocurr3ency code of isocurrency/share
         result['itemUnits'] = np.where(result.itemUnits.str.contains("/share"),
-                                       result['itemUnits'].str.split(pat='/share', n=1, expand=True)[0],
+                                       result['itemUnits'].str.split(
+                                           pat='/share', n=1, expand=True)[0],
                                        result['itemUnits'])
 
         result['worldscope_currency'] = np.where(result['itemUnits'].str.len() == 3,
@@ -1200,28 +1300,31 @@ class QAD(SqlReader):
 
             return feature[~feature.date.isna()][keep]
 
-    def worldscope_security_key(self,panel):
+    def worldscope_security_key(self, panel):
         """
         Adds Worldscope security Mapping column as worldscope_key. Warning many worldscope values are not filled at the security level 
         """
-        panel = panel.features.vendor_code( 
+        panel = panel.features.vendor_code(
             ventype=10, rename_column=True)
-        
+
         return panel.rename(columns={'Worldscope Company Mapping': 'worldscope_security_key'})
 
-    def worldscope_key(self,panel):
+    def worldscope_key(self, panel):
         """
         Adds Worldscope Company Mapping column as worldscope_key
         """
         keys = panel.features._get_keys(abbreviated=True)
         feature = self.get_worldscope_company_code(**keys)
-        feature.loc[:,'worldscope_key'] = feature.loc[:,'worldscope_key'].astype(str)
-        return  pd.merge(panel, feature, on='security_key_abbrev', how='left')
+        feature.loc[:, 'worldscope_key'] = feature.loc[:,
+                                                       'worldscope_key'].astype(str)
+        return pd.merge(panel, feature, on='security_key_abbrev', how='left')
 
     def get_worldscope_company_code(self, cusip=[], sedol=[]):
         """SQL query to map from sedol or cusip to Worldscope Company identifier, rather than security identifier"""
-        sedols = ["''" if len(sedol) == 0 else ",".join(["'{}'".format(i) for i in sedol])][0]
-        cusips = ["''" if len(cusip) == 0 else ",".join(["'{}'".format(i) for i in cusip])][0]
+        sedols = ["''" if len(sedol) == 0 else ",".join(
+            ["'{}'".format(i) for i in sedol])][0]
+        cusips = ["''" if len(cusip) == 0 else ",".join(
+            ["'{}'".format(i) for i in cusip])][0]
         query = f"""        
             SELECT
                     CASE
@@ -1250,8 +1353,8 @@ class QAD(SqlReader):
     def worldscope_industrial_classification(self, worldscope_keys):
         """retrieve the worldscope industrial classification for a list of worldscope_keys
         Certain worldscope metrics are only available for set industries (i.e cash 2003/2004)"""
-        
-        query="""
+
+        query = """
             select 
                 H.Desc_ as worldscope_industrial_classification,
                 I.Code as worldscope_key
@@ -1261,37 +1364,39 @@ class QAD(SqlReader):
 			        and I.Value_=H.Value_
                 where I.Code in ({codes})
                     and I.Item='6010'""".format(codes=",".join(["'{}'".format(i) for i in worldscope_keys]))
-        result=self.query(query)
-        result.loc[:,'worldscope_key'] = result.loc[:,'worldscope_key'].astype(str)
+        result = self.query(query)
+        result.loc[:, 'worldscope_key'] = result.loc[:,
+                                                     'worldscope_key'].astype(str)
         return result
 
-    def cash_and_equivalents(self,df, period='A', exact_match_allowed=True, convert_currency=True):
+    def cash_and_equivalents(self, df, period='A', exact_match_allowed=True, convert_currency=True):
         """ Function returns cash and cash equivalents on balance sheet in last published set of reports
         Includes short term investments 
         :str period: period type (NOT pandas standard) to retrive cash from, 
             either annual type ['A','B','G'] or quarterly type ["E","Q","H","I","R","@"]
         :bool exact_match_allowed: Allow same day merges, if False joins with previous date
         :bool convert_currency: Convert all values to USD"""
-        
+
         if "worldscope_key" not in df.columns:
             df = self.worldscope_key(df)
         worldscope_keys = df[~df.worldscope_key.isna()].worldscope_key.unique()
         feature = self.worldscope_add_last_actual(
             worldscope_keys, period=period, metric_code=2005, exact_match_allowed=exact_match_allowed)
-        feature.rename(columns={'cash___generic':"cash_and_equivalents"},inplace=True)
+        feature.rename(
+            columns={'cash___generic': "cash_and_equivalents"}, inplace=True)
         df.loc[df.worldscope_key.isna(), 'worldscope_key'] = -99
 
         df = pd.merge_asof(df.sort_values(['date']),
-                feature.sort_values(['date']),
-                on='date', by='worldscope_key',allow_exact_matches=exact_match_allowed)
+                           feature.sort_values(['date']),
+                           on='date', by='worldscope_key', allow_exact_matches=exact_match_allowed)
         df.drop(columns=['worldscope_key'], inplace=True)
 
         if convert_currency:
             df = df.units.convert_currency_aware_column(
                 metric='cash_and_equivalents',  exact_day_match=exact_match_allowed)
         return df
-    
-    def get_sp_1200_membership(self,since, until):
+
+    def get_sp_1200_membership(self, since, until):
         """this is the S&P global 1200 index, which is the S&P 500, canadian 60 and global 540 (ish)
         with gvkeyx '000003','118341' &'150918' respectively.
         Current and past consituents are in different tables, so need to separately query for each.
@@ -1324,8 +1429,8 @@ class QAD(SqlReader):
                     AND ISNULL(B.THRU, '{until}') >= '{since}'
             """.format(since=since.strftime(DATE_STRING_FORMAT_QAD),
                            until=until.strftime(DATE_STRING_FORMAT_QAD))
-        #then Rest of World
-        ROW_query_current="""
+        # then Rest of World
+        ROW_query_current = """
             SELECT
                 B.FROM_ as in_index_since,
                 ISNULL(B.THRU, '{until}') as in_index_until,
@@ -1337,8 +1442,8 @@ class QAD(SqlReader):
                     B.GVKEYX in ('150918')
                     AND ISNULL(B.THRU, '{until}') >= '{since}'
             """.format(since=since.strftime(DATE_STRING_FORMAT_QAD),
-                           until=until.strftime(DATE_STRING_FORMAT_QAD))
-        ROW_query_history="""
+                       until=until.strftime(DATE_STRING_FORMAT_QAD))
+        ROW_query_history = """
             SELECT
                 B.FROM_ as in_index_since,
                 ISNULL(B.THRU, '{until}') as in_index_until,
@@ -1350,10 +1455,10 @@ class QAD(SqlReader):
                     B.GVKEYX in ('150918')
                     AND ISNULL(B.THRU, '{until}') >= '{since}'
             """.format(since=since.strftime(DATE_STRING_FORMAT_QAD),
-                           until=until.strftime(DATE_STRING_FORMAT_QAD))
-        #concat the four queries together
-        result = pd.concat([self.query(NA_query_history),self.query(NA_query_current),
-            self.query(ROW_query_history),self.query(ROW_query_current)])
+                       until=until.strftime(DATE_STRING_FORMAT_QAD))
+        # concat the four queries together
+        result = pd.concat([self.query(NA_query_history), self.query(NA_query_current),
+                            self.query(ROW_query_history), self.query(ROW_query_current)])
         result['gvkey'] = result.gvkey.astype(str).str.zfill(6)
         result['gvkeyx'] = result.gvkeyx.astype(str).str.zfill(6)
         result['in_index_since'] = pd.to_datetime(result['in_index_since'])
@@ -1466,14 +1571,16 @@ class QAD(SqlReader):
 
         df.loc[df[worldscope_key].isna(), worldscope_key] = "-99"
 
-        worldscope_keys = df[~df[worldscope_key].isna()][worldscope_key].unique()
+        worldscope_keys = df[~df[worldscope_key].isna()
+                             ][worldscope_key].unique()
 
         feature = self.worldscope_add_last_actual(
             worldscope_keys, period=period, metric_code=feature_code, exact_match_allowed=exact_match_allowed)
         feature = feature.rename(columns={'worldscope_key': worldscope_key})
 
         if db_column_name is not None:
-            feature.rename(columns={db_column_name: feature_name}, inplace=True)
+            feature.rename(
+                columns={db_column_name: feature_name}, inplace=True)
 
         df = df.features._asof_merge_feature(feature,
                                              feature_name,
@@ -1486,4 +1593,3 @@ class QAD(SqlReader):
                 metric=feature_name, exact_day_match=True)
 
         return df.drop(columns=['security_key_abbrev', worldscope_key])
-

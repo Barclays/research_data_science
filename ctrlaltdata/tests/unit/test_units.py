@@ -2,20 +2,25 @@ import unittest
 import numpy as np
 import pandas as pd
 import datetime
+import pytest
 from money import XMoney
 
 from ...panel_constructors import (get_sp_500_panel, get_sp_1200_panel)
 from ...units import UnitsAccessor
 from ...util import NotInitializedException
+from ...config import enabled_modules
 
 
 class TestUnits(unittest.TestCase):
     def setUp(self):
+        self.dfs = {}
         self.until = pd.to_datetime(datetime.datetime.now())
         self.since = self.until - pd.tseries.offsets.MonthEnd(3)
         df_sp_500 = get_sp_500_panel(since=self.since, until=self.until)
-        df_sp_1200 = get_sp_1200_panel(since=self.since, until=self.until)
-        self.dfs = {'sp_500': df_sp_500, 'sp_1200': df_sp_1200}
+        self.dfs['sp_500'] = df_sp_500
+        if 'qad' in enabled_modules:
+            df_sp_1200 = get_sp_1200_panel(since=self.since, until=self.until)
+            self.dfs['sp_1200'] = df_sp_1200
         self.units_obj = {key: UnitsAccessor(self.dfs[key]) for key in self.dfs.keys()}
 
     def test_init(self):
@@ -32,6 +37,8 @@ class TestUnits(unittest.TestCase):
             assert ((new_until - new_since).days - (orig_until - orig_since).days) == 2*days
 
     def test_validate_exchange_rate(self):
+        if 'qad' not in enabled_modules:
+            pytest.skip("Skipping exchange rate test since 'qad' is not enabled")
         for units_obj in self.units_obj.values():
             self.assertRaises(AttributeError, units_obj._validate_exchange_rate, 
                               use_datastream_price_currency=False)
@@ -50,6 +57,8 @@ class TestUnits(unittest.TestCase):
                                                                        axis=1)
 
     def test_convert_currency_aware_column(self):
+        if 'qad' not in enabled_modules:
+            pytest.skip("Skipping convert currency test since 'qad' is not enabled")
         self.create_currency_column()
         for units_obj in self.units_obj.values():
             currency_converted_panel = units_obj.convert_currency_aware_column(metric='dummy_feature',

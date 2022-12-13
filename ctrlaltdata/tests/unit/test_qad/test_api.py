@@ -52,11 +52,11 @@ class TestAPI(unittest.TestCase):
          'excess_return'  # too many NaN features ~ 13% allowed 10%
          ]
         takes_args = ['ibes_actuals', 'exchange_rate', 'add_feature']
-        
-        method_names = dir(panel.features)
+        feature_obj = Features()
+        method_names = dir(feature_obj)
         invalid_method_names = broken + takes_args
         valid_method_names = [name for name in method_names 
-                              if not (name in invalid_method_names or name.startswith('_'))]
+                              if not (name in invalid_method_names or name.startswith('_') or name.endswith('qad'))]
         return valid_method_names
 
     def check_feature(self, method_name, panel_name, panel):
@@ -74,7 +74,7 @@ class TestAPI(unittest.TestCase):
                 assert method_name in panel.columns
 
                 # check completeness of feature in index
-                expected_incomplete = ['merger_target_next_announce_date']
+                expected_incomplete = ['merger_target_next_announce_date', 'gross_profit_margin']
                 if method_name not in expected_incomplete:
                     self.check_feature_missingness(panel, method_name)
                 print("panel columns: ", panel.columns)

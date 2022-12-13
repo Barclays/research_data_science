@@ -1,10 +1,11 @@
 import importlib
 import logging
 import pandas as pd
+import numpy as np
 import datetime
 
 
-from .util import panel_method
+from .util import panel_method, source_finder
 from .config import enabled_modules
 from . import analysis
 from . import units
@@ -118,6 +119,11 @@ class BaseFeaturesAccessor(object):
                 key_dict[key_name] = []
         return key_dict
 
+    def _get_gvkeys(self):
+        if 'gvkey' not in self._obj.columns:
+            self._obj = self._obj.features.gvkey()
+        return self._obj.gvkey.dropna().unique()
+
     def _add_security_key_abbrev(self):
         """
         Cusips and sedols have check digits which aren't used in some databases. This is a helper method to add
@@ -217,6 +223,143 @@ class BaseFeaturesAccessor(object):
         setattr(self, as_name, bound_method)
         return bound_method
 
+    @source_finder(priority_list=['qad', 'compustat'])
+    def gvkey(self, *args, source=None, **kwargs):
+        """Add the gvkey (compustat identifier) for the panel securities.
+        If the panel only has cusips, will use compustat db.
+        Otherwise will use QADs mapping
+        :returns: panel object with extra column for compustat idenifier gvkey """
+        self._warn_if_overwriting_and_delete('gvkey')
+        gvkey_call = getattr(self._obj.features, f'gvkey_{source}')
+        return gvkey_call(*args, **kwargs)
+
+    @source_finder(priority_list=['qad', 'compustat'])
+    def issuer_name(self, *args, source=None, **kwargs):
+        """
+        This function returns the issuer name
+        :param source: string -default 'QAD'. 'compustat' does not workfor global securities
+        However compustat is a quicker method
+        """
+        issuer_name_call = getattr(self._obj.features, f'issuer_name_{source}')
+        return issuer_name_call(*args, **kwargs)
+
+    @source_finder(priority_list=['qad', 'compustat'])
+    def gic(self, *args, add_gic_desc=False, source=None, **kwargs):
+        """
+        This function returns the issuer name
+        :param source: string -default 'QAD'. 'compustat' does not workfor global securities
+        :param add_gic_desc: boolean -default False. Flag to add GIC descriptions
+        """
+        gic_call = getattr(self._obj.features, f'gic_{source}')
+        return gic_call(*args, add_gic_desc=add_gic_desc, **kwargs)
+
+    @source_finder(priority_list=['qad', 'compustat'])
+    def sales(self, *args, source=None, **kwargs):
+        """
+        Adds a `sales` column to the panel.
+        If `source` is not provided, it uses the sources enabled in the configuration file
+        in the order in which they are listed
+        If `source` is provided, variable is returned from that source's method.
+        Raises an error if an invalid source is provided, or if the source is not enabled
+        in the config file.
+
+        Some sources may take additional keyword args. The details of those can be referred to
+        in the function definition inside the source module.
+
+        :param source: str, default None. The name of source from which the variable is requested
+        :returns: Pandas Dataframe. Panel with `sales` column added
+        """
+        sales_call = getattr(self._obj.features, f'sales_{source}')
+        return sales_call(*args, **kwargs)
+
+    @source_finder(priority_list=['qad', 'compustat'])
+    def ebitda(self, *args, source=None, **kwargs):
+        """
+         Adds a `ebitda` column to the panel.
+        If `source` is not provided, it uses the sources enabled in the configuration file
+        in the order in which they are listed.
+        If `source` is provided, variable is returned from that source's method.
+        Raises an error if an invalid source is provided, or if the source is not enabled
+        in the config file.
+
+        Some sources may take additional keyword args. The details of those can be referred to
+        in the function definition inside the source module.
+
+        :param source: str, default None. The name of source from which the variable is requested
+        :returns: Pandas Dataframe. Panel with `ebitda` column added
+        """
+        ebitda_call = getattr(self._obj.features, f'ebitda_{source}')
+        return ebitda_call(*args, **kwargs)
+
+    @source_finder(priority_list=['qad', 'compustat'])
+    def free_cash_flow(self, *args, source=None, **kwargs):
+        """
+        Adds a `free_cash_flow` column to the panel.
+        If `source` is not provided, it uses the sources enabled in the configuration file
+        in the order in which they are listed.
+        If `source` is provided, variable is returned from that source's method.
+        Raises an error if an invalid source is provided, or if the source is not enabled
+        in the config file.
+
+        Some sources may take additional keyword args. The details of those can be referred to
+        in the function definition inside the source module.
+
+        :param source: str, default None. The name of source from which the variable is requested
+        :returns: Pandas Dataframe. Panel with `free_cash_flow` column added
+        """
+        free_cash_flow_call = getattr(self._obj.features, f'free_cash_flow_{source}')
+        return free_cash_flow_call(*args, **kwargs)
+
+    @source_finder(priority_list=['qad', 'compustat'])
+    def common_shares(self, *args, source=None, **kwargs):
+        """
+        Adds a `common_shares` column to the panel.
+        If `source` is not provided, it uses the sources enabled in the configuration file
+        in the order in which they are listed.
+        If `source` is provided, variable is returned from that source's method.
+        Raises an error if an invalid source is provided, or if the source is not enabled
+        in the config file.
+
+        :param source: str, default None. The name of source from which the variable is requested
+        :returns: Pandas Dataframe. Panel with `common_shares` column added
+        """
+        common_shares_call = getattr(self._obj.features, f'common_shares_{source}')
+        return common_shares_call(*args, **kwargs)
+
+    @source_finder(priority_list=['qad', 'compustat'])
+    def gic4_sales_market_share_in_index(self, *args, source=None, **kwargs):
+        # [TODO: remove qad dependence from gic_code, then move to compustat module]
+        if 'gic4' not in self._obj.columns:
+            if 'gic' not in self._obj.columns:
+                self._obj = self._obj.features.gic(*args, source=source, **kwargs)
+            self._obj['gic4'] = self._obj.gic.apply(lambda x: x[:4])
+        if 'sales' not in self._obj.columns:
+            self._obj = self._obj.features.sales(*args, source=source, **kwargs)
+        market_share = self._obj[self._obj.in_index == 1].groupby(['date', 'gic4']) \
+                                                         .sum()[['sales']] \
+                                                         .rename(columns={'sales': 'gic_sales'})
+        temp = self._obj.merge(market_share, on=['date', 'gic4'])
+        temp['gic4_sales_market_share_in_index'] = temp['sales'] / temp['gic_sales']
+        temp = temp[self.unit_key + self.time_key +
+                    ['gic4_sales_market_share_in_index']]
+        return self._asof_merge_feature(temp, 'gic4_sales_market_share_in_index')
+
+    @source_finder(priority_list=['qad', 'compustat'])
+    def hhi_by_gic4(self, *args, source=None, **kwargs):
+        """
+        Adds Herfindahl–Hirschman Index (HHI) calculated per gic4 level industry.
+        More information about HHI can be found here: https://www.justice.gov/atr/herfindahl-hirschman-index
+        Returns
+        -------
+        Panel with feature hhi_by_gic4
+        """
+        if 'gic4_sales_market_share_in_index' not in self._obj.columns:
+            self._obj = self._obj.features.gic4_sales_market_share_in_index(*args, source=source, **kwargs)
+
+        df_hhi = self._obj.groupby(['gic4', 'date'])['gic4_sales_market_share_in_index']\
+            .apply(lambda x: np.sum(np.square(x))).reset_index().rename(columns={'gic4_sales_market_share_in_index': 'hhi_by_gic4'})
+
+        return self._asof_merge_feature(df_hhi, 'hhi_by_gic4', on='date', by=['gic4'])
 
 
 def build_features_accessor(enabled_modules):
