@@ -3,3 +3,4 @@ numpy
 pandas
 pyodbc
 python_stdnum
+fredapi

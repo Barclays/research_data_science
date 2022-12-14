@@ -5,19 +5,20 @@ import numpy as np
 import logging
 
 from .util import (cusip_abbrev_to_full,
-                   sedol_abbrev_to_full)
+                   sedol_abbrev_to_full,
+                   source_finder)
 from .resource import ResourceManager
 
 
 def get_security_panel(since, until, cusips=[], sedols=[], frequency='BM'):
     dates = pd.date_range(since, until, freq=frequency)
     dfs = []
-    if cusips:
+    if len(cusips) > 0:
         df = pd.DataFrame([{'security_key_name': 'cusip',
                             'security_key': cusip,
                             'date': d} for cusip, d in itertools.product(cusips, dates)])
         dfs.append(df)
-    if sedols:
+    if len(sedols) > 0:
         df = pd.DataFrame([{'security_key_name': 'sedol',
                             'security_key': sedol,
                             'date': d} for sedol, d in itertools.product(sedols, dates)])
@@ -30,7 +31,7 @@ def get_security_panel(since, until, cusips=[], sedols=[], frequency='BM'):
     raise ValueError("You must pass cusips or sedols.")
 
 
-def get_sp_panel(since, until, frequency='BM', index_name='S&P 500 INDEX'):
+def get_sp_panel_qad(since, until, frequency='BM', index_name='S&P 500 INDEX'):
     """
     Get a panel for an index from QAD's S&P composition tables.
 
@@ -112,14 +113,6 @@ def get_sp_panel(since, until, frequency='BM', index_name='S&P 500 INDEX'):
                                'security_key', 'date', 'in_index', 'index_weight']]
 
 
-def get_sp_500_panel(since, until, frequency='BM'):
-    return get_sp_panel(since, until, frequency=frequency, index_name='S&P 500 INDEX')
-
-
-def get_sp_1500_panel(since, until, frequency='BM'):
-    return get_sp_panel(since, until, frequency=frequency, index_name='S&P 1500 INDEX - SUPER COMP')
-
-
 def __sense_check_panel_and_sort(panel, keep_in_index_only):
     """
     There will be cases where there is more than one period a security_key was in the index
@@ -180,7 +173,7 @@ def __fill_missing_values(panel, fill_values, qad):
     return new_panel
 
 
-def get_index_from_datastream(since, until, frequency='BM', index_code=3670, index_name=None,
+def get_index_from_datastream(since, until, frequency='BM', index_code=None, index_name=None,
                               keep_in_index_only=False):
     """Get a panel for an index from QAD's S&P composition tables.
     Defaults to FTSE 100 Constituents.
@@ -189,9 +182,11 @@ def get_index_from_datastream(since, until, frequency='BM', index_code=3670, ind
     :var frequency: str, string denoting frequency to grab index. Pandas formatting from pandas.date_range() min frequency is monthly due to nature of underlying SQL table
     :var index_code: int, datastream index code
     :var index_name: str, index name as per datastream
-    Some common options for index_code are
-    FTSE 100 = 3670, 250 = 3671, all share = 3455
-    Aim all share 3673 
+    Some common options for index_name and index_code are
+    FTSE 100 CONSTITUENTS = 3670,
+    FTSE 250 CONSTITUENTS = 3671,
+    FTSE ALL SHARE INDEX  = 3455
+    FTSE AIM ALL SHARE	  = 3673
        """
     qad = ResourceManager().qad
     logging.warning(
@@ -206,6 +201,10 @@ def get_index_from_datastream(since, until, frequency='BM', index_code=3670, ind
             index_code = qad.datastream_index_code_from_name(index_name)
             if not index_code:
                 raise KeyError(f"No matching index code found for '{index_name}'")
+
+    if index_code and index_name:
+        logging.warning("Using index_code to retrieve index")
+
     # SQL query which gets all possible equities in the index
     # May throw warning for missing rows (one month in index)
     membership = qad.datastream_index_constituents(since, until, index_code)
@@ -242,7 +241,14 @@ def get_index_from_datastream(since, until, frequency='BM', index_code=3670, ind
                         columns=['infocode', 'date'])))
 
     new_panel = __sense_check_panel_and_sort(new_panel, keep_in_index_only)
-
+    weights = qad.datastream_index_weights(since, until, index_code)
+    if not weights.empty:
+        in_index=new_panel[new_panel.in_index==1][['date','infocode']]
+    
+        in_index = pd.merge_asof(in_index.sort_values(['date','infocode']), 
+                             weights.sort_values(['date','infocode']),
+                      on=['date'], by=['infocode'])
+        new_panel=new_panel.merge(in_index,on=['date','infocode'],how='left')
     new_panel.drop(columns=['infocode', 'startdate', 'enddate'], inplace=True)
     # now add in full cusip and sedols with the final checksum character
     new_panel.loc[new_panel.security_key_name == 'sedol', 'security_key'] = sedol_abbrev_to_full(
@@ -250,32 +256,6 @@ def get_index_from_datastream(since, until, frequency='BM', index_code=3670, ind
     new_panel.loc[new_panel.security_key_name == 'cusip', 'security_key'] = cusip_abbrev_to_full(
         new_panel.loc[new_panel.security_key_name == 'cusip', 'security_key_abbrev'])
     return new_panel[~new_panel.security_key.isna()]
-
-
-def get_gic_panel(index='sp_500', gic='', since=None, until=None, frequency='Q', renormalize_weights=True):
-    if index == 'sp_500':
-        panel = get_sp_500_panel(since=since,
-                                 until=until,
-                                 frequency=frequency)
-    elif index == 'sp_1500':
-        panel = get_sp_1500_panel(since=since,
-                                  until=until,
-                                  frequency=frequency)
-    else:
-        raise ValueError(f'Index {index} not supported.')
-    panel = panel.features.gic_code()
-    if gic:
-        panel = panel.loc[panel.gic.apply(lambda x: x[:len(gic)]) == gic]
-
-    if renormalize_weights:
-        logging.info(
-            "Re-normalizing index weights to sum to 1 over requested universe.")
-        columns = panel.columns
-        panel = panel.merge(panel.groupby('date').sum()[
-                            'index_weight'].rename('weight_sum'), on='date')
-        panel['index_weight'] = panel['index_weight'] / panel['weight_sum']
-        panel = panel[columns]
-    return panel
 
 
 def get_sp_1200_panel(since, until, frequency='BM'):
@@ -324,6 +304,7 @@ def get_sp_1200_panel(since, until, frequency='BM'):
         panel.loc[panel.security_key_name == 'cusip', 'security_key_abbrev'])
     return panel
 
+
 def search_for_datastream_index(search_term=None):
     """Returns a list of possible indices available from the Datastream source.
     These names can be used in get_index_from_datastream().
@@ -335,3 +316,104 @@ def search_for_datastream_index(search_term=None):
     if search_term:
         search_term=search_term.upper()
     return qad.datastream_index_name_search(search_term=search_term)
+
+
+def get_sp_panel_compustat(since, until, frequency='BM', index_name='S&P 500 INDEX'):
+    """Retrieve the S&P 500 or 1500 index members between since and until,
+            Frequencies found here https://pandas.pydata.org/pandas-docs/stable/user_guide/timeseries.html#timeseries-offset-aliases,
+            BM = business month end frequency"""
+    compustat = ResourceManager().compustat
+    if index_name == 'S&P 500 INDEX':
+        membership = compustat.get_sp_500_index_membership(since, until)
+    elif index_name == 'S&P 1500 INDEX - SUPER COMP':
+        membership = compustat.get_sp_1500_index_membership(since, until)
+    else:
+        raise ValueError(f"Index name {index_name} is not available with source Compustat")
+
+    membership_map = defaultdict(list)
+    for i, row in membership.iterrows():
+        membership_map[row['security_key']].append(
+            (row['in_index_since'], row['in_index_until']))
+
+    dates = pd.date_range(start=since, end=until, freq=frequency)
+    panel = []
+    m_temp = membership[['security_key',
+                         'security_key_name']].drop_duplicates()
+    for i in dates:
+        for j, r in m_temp.iterrows():
+            panel.append([r['security_key_name'], r['security_key'], i])
+    panel = pd.DataFrame(
+        panel, columns=['security_key_name', 'security_key', 'date'])
+    del m_temp
+
+    def check_if_in_index(row):
+        for in_index_since, in_index_until in membership_map[row['security_key']]:
+            if in_index_since <= row['date'] <= in_index_until:
+                return 1
+        return 0
+
+    panel['in_index'] = panel.apply(check_if_in_index, axis=1)
+    panel = panel.sort_values('date')
+    membership = membership.sort_values('in_index_since')
+    panel = pd.merge_asof(panel, membership[['security_key', 'security_key_name', 'gvkey', 'in_index_since']],
+                          left_on='date', right_on='in_index_since', by=['security_key', 'security_key_name'])
+    panel.loc[:, 'security_key_abbrev'] = panel['security_key'].apply(
+        lambda x: x[:8])
+    panel = panel[['security_key_abbrev', 'security_key',
+                   'security_key_name', 'gvkey', 'date', 'in_index']]
+    return panel
+
+
+index_membership_func = {'qad_panel': get_sp_panel_qad,
+                         'compustat_panel': get_sp_panel_compustat}
+
+
+@source_finder(priority_list=['qad', 'compustat'])
+def get_sp_panel(since, until, *args, frequency='BM', index_name='S&P 500 INDEX', source=None, **kwargs):
+    return index_membership_func[f'{source}_panel'](since, until, *args, frequency=frequency, index_name=index_name, **kwargs)
+
+
+@source_finder(priority_list=['qad', 'compustat'])
+def get_sp_500_panel(since, until, *args, frequency='BM', source=None, **kwargs):
+    return index_membership_func[f'{source}_panel'](since, until, *args, frequency=frequency, index_name='S&P 500 INDEX', **kwargs)
+
+
+@source_finder(priority_list=['qad', 'compustat'])
+def get_sp_1500_panel(since, until, *args, frequency='BM', source=None, **kwargs):
+    return index_membership_func[f'{source}_panel'](since, until, *args, frequency=frequency, index_name='S&P 1500 INDEX - SUPER COMP', **kwargs)
+
+
+@source_finder(priority_list=['qad', 'compustat'])
+def get_gic_panel(*args, index='sp_500', gic='', since=None, until=None, frequency='Q', renormalize_weights=True, source=None, **kwargs):
+    if index == 'sp_500':
+        panel = get_sp_500_panel(since,
+                                 until,
+                                 *args,
+                                 frequency=frequency,
+                                 source=source,
+                                 **kwargs)
+    elif index == 'sp_1500':
+        panel = get_sp_1500_panel(since,
+                                  until,
+                                  *args,
+                                  frequency=frequency,
+                                  source=source,
+                                  **kwargs)
+    else:
+        raise ValueError(f'Index {index} not supported.')
+    panel = panel.features.gic_code(*args, source=source, **kwargs)
+    if gic:
+        panel = panel.loc[panel.gic.apply(lambda x: x[:len(gic)]) == gic]
+
+    if renormalize_weights:
+        if source == 'qad':
+            logging.info(
+                "Re-normalizing index weights to sum to 1 over requested universe.")
+            columns = panel.columns
+            panel = panel.merge(panel.groupby('date').sum()[
+                                    'index_weight'].rename('weight_sum'), on='date')
+            panel['index_weight'] = panel['index_weight'] / panel['weight_sum']
+            panel = panel[columns]
+        else:
+            raise ValueError("Weights renormalization only supported with source = 'qad'")
+    return panel

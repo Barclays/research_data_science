@@ -2,16 +2,44 @@ import pandas as pd
 import logging
 import datetime
 import numpy as np
-from pandas.tseries.offsets import DateOffset
-
 
 from ..resource import ResourceManager
 from ..util import (convert_metric_to_currency_aware_column,
                     NoIBESActualsFoundException
                     )
+from ..panel_constructors import get_security_panel
 
 
 class Features():
+    def gvkey_qad(self):
+        """
+        Adds gvkeys to a panel of securities.
+        This function is used when there are Sedols in the panel.
+        """
+        self._obj = self._obj.features.vendor_code(4, "compustat")
+        non_na_code = (~self._obj.compustat.isna())
+        self._obj.loc[non_na_code, 'compustat'] = [
+            str(int(i)) for i in self._obj.loc[non_na_code, 'compustat']]
+        qad = ResourceManager().qad
+        cusip_ind = (self._obj.security_key_name == 'cusip') & (
+            ~self._obj.compustat.isna())
+        sedol_ind = (self._obj.security_key_name == 'sedol') & (
+            ~self._obj.compustat.isna())
+        if not self._obj.loc[cusip_ind].empty:
+            NA = qad.get_gvkey_from_secintcode(
+                self._obj.loc[cusip_ind].compustat.unique()).rename(columns={'secintcode': 'compustat'})
+        else:
+            NA = pd.DataFrame()
+        if not self._obj.loc[sedol_ind].empty:
+            ROW = qad.get_gvkey_from_secid(
+                self._obj.loc[sedol_ind].compustat.unique()).rename(columns={'secid': 'compustat'})
+        else:
+            ROW = pd.DataFrame()
+
+        self._obj = self._obj.merge(pd.concat([NA, ROW]), on=['security_key_name', 'compustat'],
+                               how='left').drop(columns=['compustat'])
+        return self._obj
+
     def tickers(self):
         """
         Adds a list of tickers to the panel for `security_key_name` == "cusip"
@@ -37,7 +65,7 @@ class Features():
     def total_return_index(self, exact_day_match=True):
         """ 
         This returns a return index (closing values).
-        
+
         :param exact_day_match: bool, default True
             - If True, allow matching with the same 'on' value
               (i.e. less-than-or-equal-to / greater-than-or-equal-to)
@@ -62,7 +90,7 @@ class Features():
     def sp_500_market_weight(self):
         """
         Adds market weights for S&P 500 as a fraction.
-        
+
         :returns: panel with a `sp_500_market_weight` column
         """
         since, until = self._get_date_range(delta=datetime.timedelta(days=7))
@@ -78,7 +106,7 @@ class Features():
     def sp_1500_market_weight(self):
         """
         Adds market weights for S&P 1500 as a fraction.
-        
+
         :returns: panel with a `sp_1500_market_weight` column
         """
         since, until = self._get_date_range(delta=datetime.timedelta(days=7))
@@ -211,11 +239,12 @@ class Features():
                                           'datastream_currency': 'currency'})
         # merge as of on minimal copy of panel, so don't add "currency" to panel
         df = self._obj.copy()[['security_key_abbrev', 'security_key_name', 'date']].features._asof_merge_feature(feature,
-                                      'closing_price',
-                                      by=['security_key_abbrev',
-                                            'security_key_name'],
-                                      exact_match_allowed=exact_day_match)
-        df=convert_metric_to_currency_aware_column(df, 'closing_price', 'currency')
+                                                                                                                 'closing_price',
+                                                                                                                 by=['security_key_abbrev',
+                                                                                                                     'security_key_name'],
+                                                                                                                 exact_match_allowed=exact_day_match)
+        df = convert_metric_to_currency_aware_column(
+            df, 'closing_price', 'currency')
         if convert_currency:
             df = df.units.convert_currency_aware_column(
                 metric='closing_price',  to_currency=to_currency)
@@ -225,7 +254,7 @@ class Features():
         """
         Adds volatility of closing prices. To get a smooth time series unaffected by share splits and other corporate actions,
         we default to fully adjusted values, `adj_type`= 2.
-        
+
         :param days: int, default 253 
                 Number of trading days to calculate volatility over
         :param adj_type: int {0, 1, 2}, default 2
@@ -250,44 +279,49 @@ class Features():
         feature = qad.get_closing_price_since_until_by_cusip_sedol(
             since, until, adj_type, **keys)
         feature['date'] = pd.to_datetime(feature['date'])
-        if normalise and normalise_method not in ['average','start','end']:
-            logging.warning(""" Only 'average','start','end' normalise_method are accepted, will return raw volatility values""")
-        col_name="closing_price_volatility"
+        if normalise and normalise_method not in ['average', 'start', 'end']:
+            logging.warning(
+                """ Only 'average','start','end' normalise_method are accepted, will return raw volatility values""")
+        col_name = "closing_price_volatility"
         feature2 = pd.DataFrame()
         for ix, group in feature.groupby('security_key_abbrev'):
             vol_value = (group.sort_values('date')
-                            .datastream_closing_price
-                            .bfill()   # rolling mean does not skip nans
-                                        .rolling(days)
-                                        .std())
-            group = group.assign(closing_price_volatility=vol_value)
-            if normalise and normalise_method == "average":
-                
-                mean_price=(group.sort_values('date')
                          .datastream_closing_price
                          .bfill()   # rolling mean does not skip nans
-                                    .rolling(days)
-                                    .mean())
-                col_name="normalised_closing_price_volatility"
+                         .rolling(days)
+                         .std())
+            group = group.assign(closing_price_volatility=vol_value)
+            if normalise and normalise_method == "average":
+
+                mean_price = (group.sort_values('date')
+                              .datastream_closing_price
+                              .bfill()   # rolling mean does not skip nans
+                              .rolling(days)
+                              .mean())
+                col_name = "normalised_closing_price_volatility"
                 group = group.assign(closing_price_mean=mean_price)
-            
+
             feature2 = feature2.append(group)
-        if normalise and normalise_method=="average":
-            feature2.loc[:,col_name]=feature2.loc[:,'closing_price_volatility']/feature2.loc[:,'closing_price_mean']
-        elif normalise and normalise_method=="start":
-            col_name="normalised_closing_price_volatility"
-            shifted=feature2.sort_values(['security_key_abbrev','date'])
-            shifted.loc[:,'datastream_closing_price']=shifted['datastream_closing_price'].shift(days)
-            shifted.rename(columns={'datastream_closing_price':'first_datastream_closing_price',
-                       },inplace=True)
-            shape_store=feature2.shape[0]
-            feature2=feature2.merge(shifted[['first_datastream_closing_price','security_key_abbrev','security_key_name','date']],
-                on=['security_key_abbrev','security_key_name','date'],how='left' )
-            assert shape_store==feature2.shape[0]
-            feature2.loc[:,col_name]=feature2.loc[:,'closing_price_volatility']/feature2.loc[:,'first_datastream_closing_price']
-        elif normalise and normalise_method=="end":
-            col_name="normalised_closing_price_volatility"
-            feature2.loc[:,col_name]=feature2.loc[:,'closing_price_volatility']/feature2.loc[:,'datastream_closing_price']
+        if normalise and normalise_method == "average":
+            feature2.loc[:, col_name] = feature2.loc[:,
+                                                     'closing_price_volatility']/feature2.loc[:, 'closing_price_mean']
+        elif normalise and normalise_method == "start":
+            col_name = "normalised_closing_price_volatility"
+            shifted = feature2.sort_values(['security_key_abbrev', 'date'])
+            shifted.loc[:, 'datastream_closing_price'] = shifted['datastream_closing_price'].shift(
+                days)
+            shifted.rename(columns={'datastream_closing_price': 'first_datastream_closing_price',
+                                    }, inplace=True)
+            shape_store = feature2.shape[0]
+            feature2 = feature2.merge(shifted[['first_datastream_closing_price', 'security_key_abbrev', 'security_key_name', 'date']],
+                                      on=['security_key_abbrev', 'security_key_name', 'date'], how='left')
+            assert shape_store == feature2.shape[0]
+            feature2.loc[:, col_name] = feature2.loc[:, 'closing_price_volatility'] / \
+                feature2.loc[:, 'first_datastream_closing_price']
+        elif normalise and normalise_method == "end":
+            col_name = "normalised_closing_price_volatility"
+            feature2.loc[:, col_name] = feature2.loc[:, 'closing_price_volatility'] / \
+                feature2.loc[:, 'datastream_closing_price']
 
         keep = ['security_key_abbrev', 'security_key_name',
                 'date', col_name]
@@ -324,7 +358,7 @@ class Features():
         if normalise and normalise_method not in ['average', 'start', 'end']:
             logging.warning("Only 'average','start','end' normalise_method are accepted, "
                             "will return raw volatility values")
-        col_name="return_index_volatility"
+        col_name = "return_index_volatility"
         feature2 = pd.DataFrame()
         for ix, group in feature.groupby('security_key_abbrev'):
             vol_value = (group.sort_values('date')
@@ -333,34 +367,38 @@ class Features():
                          .rolling(days)
                          .std())
             group = group.assign(return_index_volatility=vol_value)
-            
-            if normalise and normalise_method=="average":
-                
-                mean_ri=(group.sort_values('date')
-                         .total_return_index
-                         .bfill()   # rolling mean does not skip nans
-                                    .rolling(days)
-                                    .mean())
-                col_name="normalised_return_index_volatility"
+
+            if normalise and normalise_method == "average":
+
+                mean_ri = (group.sort_values('date')
+                           .total_return_index
+                           .bfill()   # rolling mean does not skip nans
+                           .rolling(days)
+                           .mean())
+                col_name = "normalised_return_index_volatility"
                 group = group.assign(return_index_mean=mean_ri)
             feature2 = feature2.append(group)
 
-        if normalise and normalise_method=="average":
-            feature2.loc[:,col_name]=feature2.loc[:,'return_index_volatility']/feature2.loc[:,'return_index_mean']
-        elif normalise and normalise_method=="start":
-            col_name="normalised_return_index_volatility"
-            shifted=feature2.sort_values(['security_key_abbrev','date'])
-            shifted.loc[:,'total_return_index']=shifted['total_return_index'].shift(days)
-            shifted.rename(columns={'total_return_index':'first_total_return_index',
-                       },inplace=True)
-            shape_store=feature2.shape[0]
-            feature2=feature2.merge(shifted[['first_total_return_index','security_key_abbrev','security_key_name','date']],
-                on=['security_key_abbrev','security_key_name','date'],how='left' )
-            assert shape_store==feature2.shape[0]
-            feature2.loc[:,col_name]=feature2.loc[:,'return_index_volatility']/feature2.loc[:,'first_total_return_index']
-        elif normalise and normalise_method=="end":
-            col_name="normalised_return_index_volatility"
-            feature2.loc[:,col_name]=feature2.loc[:,'return_index_volatility']/feature2.loc[:,'total_return_index']
+        if normalise and normalise_method == "average":
+            feature2.loc[:, col_name] = feature2.loc[:,
+                                                     'return_index_volatility']/feature2.loc[:, 'return_index_mean']
+        elif normalise and normalise_method == "start":
+            col_name = "normalised_return_index_volatility"
+            shifted = feature2.sort_values(['security_key_abbrev', 'date'])
+            shifted.loc[:, 'total_return_index'] = shifted['total_return_index'].shift(
+                days)
+            shifted.rename(columns={'total_return_index': 'first_total_return_index',
+                                    }, inplace=True)
+            shape_store = feature2.shape[0]
+            feature2 = feature2.merge(shifted[['first_total_return_index', 'security_key_abbrev', 'security_key_name', 'date']],
+                                      on=['security_key_abbrev', 'security_key_name', 'date'], how='left')
+            assert shape_store == feature2.shape[0]
+            feature2.loc[:, col_name] = feature2.loc[:, 'return_index_volatility'] / \
+                feature2.loc[:, 'first_total_return_index']
+        elif normalise and normalise_method == "end":
+            col_name = "normalised_return_index_volatility"
+            feature2.loc[:, col_name] = feature2.loc[:,
+                                                     'return_index_volatility']/feature2.loc[:, 'total_return_index']
         keep = ['security_key_abbrev', 'security_key_name',
                 'date', col_name]
         return self._asof_merge_feature(feature2[keep],
@@ -385,7 +423,7 @@ class Features():
         """
         logging.info(
             'Market Value is for all listings, if want one listing use market_cap()')
-        if self._obj.date.min()<datetime.datetime(2000,1,1):
+        if self._obj.date.min() < datetime.datetime(2000, 1, 1):
             logging.warning("""consolidated_market_value not filled before 2000 in datastream. 
                          Consider accumulating market caps for all relevant listings""")
         since, until = self._get_date_range(delta=datetime.timedelta(days=365))
@@ -396,18 +434,21 @@ class Features():
         feature['date'] = pd.to_datetime(feature['date'])
         # merge as of on minimal copy of panel, so can create currency aware columns on smaller object
         df = self._obj.copy()[['security_key_abbrev', 'security_key_name', 'date']].features._asof_merge_feature(feature,
-                                      'consolidated_market_value',
-                                      by=['security_key_abbrev',
-                                            'security_key_name'],                                                                           
-                                      exact_match_allowed=exact_day_match)
-        df = convert_metric_to_currency_aware_column(df, 'consolidated_market_value', 'mkt_val_currency')
+                                                                                                                 'consolidated_market_value',
+                                                                                                                 by=['security_key_abbrev',
+                                                                                                                     'security_key_name'],
+                                                                                                                 exact_match_allowed=exact_day_match)
+        df = convert_metric_to_currency_aware_column(
+            df, 'consolidated_market_value', 'mkt_val_currency')
         if convert_currency:
-            df = df.units.convert_currency_aware_column(metric='consolidated_market_value')
+            df = df.units.convert_currency_aware_column(
+                metric='consolidated_market_value')
         else:
-            logging.warning("Not converting to USD. Returning in native currency object")
+            logging.warning(
+                "Not converting to USD. Returning in native currency object")
 
-        return self._obj.merge(df,on=['security_key_abbrev', 'security_key_name', 'date'], how='left')
-    
+        return self._obj.merge(df, on=['security_key_abbrev', 'security_key_name', 'date'], how='left')
+
     def market_cap(self, exact_day_match=True, convert_currency=True, free_float=False):
         """Returns market cap for one listing.
         :param exact_day_match: bool, if True gets same day close prices, if False grabs close prices from day before.
@@ -425,7 +466,7 @@ class Features():
             feature = qad.get_free_float_market_cap_since_until_by_cusip_sedol(
                 since, until, **keys)
         else:
-            metric_name="market_cap"
+            metric_name = "market_cap"
             feature = qad.get_market_cap_since_until_by_cusip_sedol(
                 since, until, **keys)
         feature['date'] = pd.to_datetime(feature['date'])
@@ -435,13 +476,13 @@ class Features():
             by=['security_key_abbrev', 'security_key_name'],
             exact_match_allowed=exact_day_match)
         df = convert_metric_to_currency_aware_column(
-                df, metric_name, 'mkt_cap_currency')
+            df, metric_name, 'mkt_cap_currency')
         if convert_currency:
             df = df.units.convert_currency_aware_column(
                 metric='market_cap')
 
-        return self._obj.merge(df, on=['security_key_abbrev', 'security_key_name', 'date'],how='left')
-    
+        return self._obj.merge(df, on=['security_key_abbrev', 'security_key_name', 'date'], how='left')
+
     def consolidated_share_count(self, exact_day_match=True):
         """Returns consolidated share count for multiple listings.
         :param exact_day_match: bool, if True gets same day close prices, if False grabs close prices from day before.
@@ -457,21 +498,23 @@ class Features():
         feature = qad.get_consolidated_share_count_since_until_by_cusip_sedol(
             since, until, **keys)
         feature['date'] = pd.to_datetime(feature['date'])
-        
+
         return self._asof_merge_feature(feature,
                                         'consolidated_share_count',
                                         on='date',
-                                        by=['security_key_abbrev', 'security_key_name'],
+                                        by=['security_key_abbrev',
+                                            'security_key_name'],
                                         exact_match_allowed=exact_day_match)
 
-    def common_shares(self):
+    def common_shares_qad(self):
         """Returns shares for this listing."""
         logging.info(
-                """common_shares is for once listing, if want all listings use consolidated_share_count(). 
+            """common_shares is for once listing, if want all listings use consolidated_share_count(). 
                 Note also that if share count does not change in the five years before the panel starts, 
                 this metric will be empty.""")
         keys = self._get_keys(abbreviated=True)
-        since, until = self._get_date_range(delta=datetime.timedelta(days=5*365))
+        since, until = self._get_date_range(
+            delta=datetime.timedelta(days=5*365))
         qad = ResourceManager().qad
         feature = qad.get_common_shares_one_listing(
             since, until, **keys)
@@ -490,22 +533,25 @@ class Features():
         qad = ResourceManager().qad
         keys = self._get_keys(abbreviated=True)
         ibes_key_candidates = qad.get_ibes_key(**keys)
-            
-        panel_all = self._obj.merge(ibes_key_candidates, on=["security_key_abbrev", "security_key_name"], how='left')
+
+        panel_all = self._obj.merge(ibes_key_candidates, on=[
+                                    "security_key_abbrev", "security_key_name"], how='left')
         # Filter that date must be in a valid forecast daterange
         # also re-sort the columns to rank preffered matches by:
         # 1 Is a primary quote
         # 2 Highest Rank (newest listing)
         # 3 Lowest exchange (NA only), chooses US
         panel_eff = panel_all[(panel_all.date >= panel_all.EffectiveDate) &
-            (panel_all.date <= panel_all.ExpireDate)].sort_values([
-            'security_key_abbrev', 'IsPrimary', 'Rank', 'Exchange'], ascending= [True, False, True, True])
+                              (panel_all.date <= panel_all.ExpireDate)].sort_values([
+                                  'security_key_abbrev', 'IsPrimary', 'Rank', 'Exchange'], ascending=[True, False, True, True])
         # then groupby security-date pairs and choose first row!
-        grouped_eff = panel_eff.groupby(["security_key_abbrev", "security_key_name", "date"]).first()
+        grouped_eff = panel_eff.groupby(
+            ["security_key_abbrev", "security_key_name", "date"]).first()
         keep = ["security_key_abbrev", "security_key_name", "date", "ibes_key"]
         shape_before = self._obj.shape[0]
         self._obj = self._obj.merge(grouped_eff.reset_index()[keep],
-                                    on=["security_key_abbrev", "security_key_name", "date"],
+                                    on=["security_key_abbrev",
+                                        "security_key_name", "date"],
                                     how='left')
         # the panel should not have extra rows post the merge
         assert self._obj.shape[0] == shape_before
@@ -550,9 +596,12 @@ class Features():
         if keep_ibes_key:
             keep += ['ibes_key']
         if not actuals.empty:
-            currency_dict = qad.ibes_currency_dictionary(actuals['DefCurrPermID'].unique())
-            actuals.loc[:, 'ibes_currency_'+metric_name] = actuals.loc[:, 'DefCurrPermID'].map(currency_dict)
-            actuals = convert_metric_to_currency_aware_column(actuals, metric_name, 'ibes_currency_'+metric_name)
+            currency_dict = qad.ibes_currency_dictionary(
+                actuals['DefCurrPermID'].unique())
+            actuals.loc[:, 'ibes_currency_'+metric_name] = actuals.loc[:,
+                                                                       'DefCurrPermID'].map(currency_dict)
+            actuals = convert_metric_to_currency_aware_column(
+                actuals, metric_name, 'ibes_currency_'+metric_name)
             self._obj = self._asof_merge_feature(actuals,
                                                  metric_name,
                                                  on='date',
@@ -574,7 +623,8 @@ class Features():
         since, until = self._get_date_range(delta=datetime.timedelta(days=7))
         keys = self._get_keys(abbreviated=True)
         if len(keys['sedol']) > 0:
-            logging.warning('This function only adds the date for North American securities, not for global ones.')
+            logging.warning(
+                'This function only adds the date for North American securities, not for global ones.')
         feature = qad.get_merger_target_announcement_dates(
             since, until, **keys)
         feature = feature.sort_values('merger_target_announce_date')
@@ -585,7 +635,8 @@ class Features():
                                right_on='merger_target_announce_date',
                                by=['security_key_name', 'security_key_abbrev'],
                                direction='forward')
-        result = result.rename(columns={'merger_target_announce_date': 'merger_target_next_announce_date'})
+        result = result.rename(
+            columns={'merger_target_announce_date': 'merger_target_next_announce_date'})
         return result
 
     def returns(self, exact_day_match=True):
@@ -594,9 +645,12 @@ class Features():
         :param exact_day_match: bool, if True uses same day close prices, if False uses close prices from day before.
         """
         if 'total_return_index' not in self._obj.columns:
-            self._obj = self._obj.features.total_return_index(exact_day_match=exact_day_match)
-        self._obj = self._obj.analysis.add_lagged_feature_on_date_by_key('total_return_index')
-        self._obj['returns'] = self._obj['total_return_index'] / self._obj['total_return_index_lag(1)']
+            self._obj = self._obj.features.total_return_index(
+                exact_day_match=exact_day_match)
+        self._obj = self._obj.analysis.add_lagged_feature_on_date_by_key(
+            'total_return_index')
+        self._obj['returns'] = self._obj['total_return_index'] / \
+            self._obj['total_return_index_lag(1)']
         return self._obj
 
     def vendor_code(self, ventype=10, rename_column='vendor_code'):
@@ -632,15 +686,18 @@ class Features():
         qad = ResourceManager().qad
         worldscope_company_mapping_col = 'Worldscope Company Mapping'
         if worldscope_company_mapping_col not in self._obj.columns:
-            self._obj = self._obj.features.vendor_code(ventype=10, rename_column=True)
+            self._obj = self._obj.features.vendor_code(
+                ventype=10, rename_column=True)
 
         codes_table = qad.get_last_fiscal_end_dates(self._obj, period)
         codes_table = codes_table.rename(
             columns={'code': worldscope_company_mapping_col})
-        codes_table[worldscope_company_mapping_col] = codes_table[worldscope_company_mapping_col].astype(str)
+        codes_table[worldscope_company_mapping_col] = codes_table[worldscope_company_mapping_col].astype(
+            str)
         temp = self._obj[~self._obj[worldscope_company_mapping_col].isna()]
         temp = pd.merge_asof(temp.sort_values(by=['quarter_end_date', worldscope_company_mapping_col]),
-                             codes_table.sort_values(by=['end_date', worldscope_company_mapping_col]),
+                             codes_table.sort_values(
+                                 by=['end_date', worldscope_company_mapping_col]),
                              left_on='quarter_end_date',
                              right_on='end_date',
                              by=worldscope_company_mapping_col,
@@ -692,10 +749,12 @@ class Features():
         qad = ResourceManager().qad
         if "worldscope_key" not in self._obj.columns:
             self._obj = qad.worldscope_key(self._obj)
-        worldscope_keys = self._obj[~self._obj.worldscope_key.isna()].worldscope_key.unique()
+        worldscope_keys = self._obj[~self._obj.worldscope_key.isna(
+        )].worldscope_key.unique()
         feature = qad.worldscope_add_last_actual(
             worldscope_keys, period=period, metric_code=2005, exact_match_allowed=exact_match_allowed)
-        feature.rename(columns={'cash___generic': 'cash_and_equivalents'}, inplace=True)
+        feature.rename(
+            columns={'cash___generic': 'cash_and_equivalents'}, inplace=True)
         self._obj.loc[self._obj.worldscope_key.isna(), 'worldscope_key'] = -99
 
         self._obj = self._asof_merge_feature(feature,
@@ -706,7 +765,8 @@ class Features():
         self._obj.drop(columns=['worldscope_key'], inplace=True)
         metric_name = 'cash_and_equivalents'
         if convert_currency:
-            self._obj = self._obj.units.convert_currency_aware_column(metric=metric_name, exact_day_match=True)
+            self._obj = self._obj.units.convert_currency_aware_column(
+                metric=metric_name, exact_day_match=True)
         return self._obj
 
     def net_cash(self, period='A', exact_match_allowed=True, convert_currency=True):
@@ -787,17 +847,21 @@ class Features():
         df = df.features.net_cash(period=period, exact_match_allowed=exact_match_allowed,
                                   convert_currency=True)
 
-        mv_net_cash_not_null = ~(df['consolidated_market_value'].isna() & df['net_cash'].isna())
-        pref_stock_minority_int_null = (df['preferred_stock'].isna() | df['minority_interest'].isna())
+        mv_net_cash_not_null = ~(
+            df['consolidated_market_value'].isna() & df['net_cash'].isna())
+        pref_stock_minority_int_null = (
+            df['preferred_stock'].isna() | df['minority_interest'].isna())
 
         if any(mv_net_cash_not_null & pref_stock_minority_int_null):
             logging.warning("Found NA values for Preferred Stock and/or Minority Interest."
                             "Filling them with 0s.")
-            df['preferred_stock'] = np.where(mv_net_cash_not_null, 0, df['preferred_stock'])
-            df['minority_interest'] = np.where(mv_net_cash_not_null, 0, df['minority_interest'])
+            df['preferred_stock'] = np.where(
+                mv_net_cash_not_null, 0, df['preferred_stock'])
+            df['minority_interest'] = np.where(
+                mv_net_cash_not_null, 0, df['minority_interest'])
 
         df['enterprise_value'] = df['consolidated_market_value'] - df['net_cash'] \
-                                 + df['preferred_stock'] + df['minority_interest']
+            + df['preferred_stock'] + df['minority_interest']
 
         df = df[['security_key', 'security_key_name', 'date', 'enterprise_value']]
         self._obj = self._asof_merge_feature(df,
@@ -821,14 +885,21 @@ class Features():
             self._obj = self._obj.features.returns()
 
         if weight_column not in columns:
-            logging.warning(f"{weight_column} column not found. Adding a column with equal weights")
+            logging.warning(
+                f"{weight_column} column not found. Adding a column with equal weights")
             self._obj[weight_column] = self._obj['in_index'].copy()
-            self._obj[weight_column] = self._obj[weight_column]/self._obj.groupby(['date'])[weight_column].transform('sum')
+            self._obj[weight_column] = self._obj[weight_column] / \
+                self._obj.groupby(['date'])[weight_column].transform('sum')
 
-        self._obj = self._obj.analysis.add_lagged_feature_on_date_by_key(weight_column, lag=-1)
-        self._obj['weighted_asset_return'] = (self._obj[f'{weight_column}_lag(-1)'] * (self._obj['returns'] - 1.))
-        period_return = self._obj.groupby('date')[['weighted_asset_return']].sum() + 1.
-        period_return = period_return.loc[period_return.index > period_return.index.min()]  # since we dont have the first period.
+        self._obj = self._obj.analysis.add_lagged_feature_on_date_by_key(
+            weight_column, lag=-1)
+        self._obj['weighted_asset_return'] = (
+            self._obj[f'{weight_column}_lag(-1)'] * (self._obj['returns'] - 1.))
+        period_return = self._obj.groupby(
+            'date')[['weighted_asset_return']].sum() + 1.
+        # since we dont have the first period.
+        period_return = period_return.loc[period_return.index >
+                                          period_return.index.min()]
         self._obj = self._obj.merge(period_return.rename(columns={'weighted_asset_return': column_name}),
                                     left_on='date',
                                     right_on='date').sort_values('date')
@@ -841,12 +912,14 @@ class Features():
         Specifies the weighting of the `benchmark_return` column.
         :returns: Panel with `excess_return` added to the columns.
         """
-        logging.warning(f"Calculating excess return over benchmark defined by {benchmark_weight_column} weights.")
+        logging.warning(
+            f"Calculating excess return over benchmark defined by {benchmark_weight_column} weights.")
         columns = self._obj.columns.tolist()
         self._obj = self._obj.features.portfolio_return(weight_column=benchmark_weight_column,
                                                         column_name='benchmark_return')
         self._obj = self._obj.features.returns()
-        self._obj['excess_return'] = self._obj['returns'] - self._obj['benchmark_return']
+        self._obj['excess_return'] = self._obj['returns'] - \
+            self._obj['benchmark_return']
         return self._obj[columns + ['excess_return']]
 
     def returns_momentum(self, month_lag_start=12, month_lag_end=1, exact_day_match=True):
@@ -867,37 +940,40 @@ class Features():
         # compile all the dates we need return values for
         # without assuming these are in the panel.
         # i.e can choose annual panel but 6m momentum
-        date_series = self._obj['date'].drop_duplicates()
-        dates_needed = [i+DateOffset(months=-month_lag_start)
-                        for i in date_series]
-        dates_needed = dates_needed + \
-            [i+DateOffset(months=-month_lag_end) for i in date_series]
-        dates_needed += [i for i in date_series]
-        df = []
-        for d in list(set(dates_needed)):
-            for i, r in self._obj[['security_key', 'security_key_name']].drop_duplicates().iterrows():
-                df.append([d, r['security_key_name'], r['security_key']])
-        df = pd.DataFrame(
-            df, columns=['date', 'security_key_name', 'security_key'])
-        df.__init__(df)
-        df = df.features.total_return_index(exact_day_match=exact_day_match)
+        offset_s = self._obj.analysis.auto_select_monthly_offset_function(
+            n_months=month_lag_start)
+        offset_e = self._obj.analysis.auto_select_monthly_offset_function(
+            n_months=month_lag_end)
+        feature_since, _ = self._get_date_range(
+            delta=offset_s)
+        _, feature_until = self._get_date_range(
+            delta=offset_e)
 
-        start_offset = pd.tseries.offsets.DateOffset(months=month_lag_start)
-        df = df.analysis.add_offset_lagged_feature_on_date_by_key(
-            'total_return_index', offset=start_offset)
-        end_offset = pd.tseries.offsets.DateOffset(months=month_lag_end)
-        df = df.analysis.add_offset_lagged_feature_on_date_by_key(
-            'total_return_index', offset=end_offset)
-        nam_s = f"total_return_index_lag({start_offset})"
-        nam_e = f"total_return_index_lag({end_offset})"
-        df = df[(~df[nam_s].isna()) & (~df[nam_e].isna())]
-        df.loc[:, 'returns_momentum'] = df.loc[:, nam_e] / df.loc[:, nam_s]-1
+        month_freq = self._obj.analysis.auto_select_panel_generator_monthly_frequency()
+        keys = self._get_keys()
+
+        df = get_security_panel(feature_since, feature_until, cusips=keys['cusip'],
+                                sedols=keys['sedol'], frequency=month_freq)
+
+        df = df.features.total_return_index(
+            exact_day_match=exact_day_match)
+
+        df = df.analysis.add_offset_lagged_feature_on_date_by_key('total_return_index', key=['security_key', 'security_key_name'],
+                                                                  offset=offset_s)
+        start_column = df.columns[-1]
+        df = df.analysis.add_offset_lagged_feature_on_date_by_key('total_return_index', key=['security_key', 'security_key_name'],
+                                                                  offset=offset_e)
+        end_column = df.columns[-1]
+
+        df = df[(~df[start_column].isna()) & (~df[end_column].isna())]
+        df.loc[:, 'returns_momentum'] = df.loc[:,
+                                               end_column] / df.loc[:, start_column]-1
         return self._obj.merge(df[['returns_momentum', 'date', 'security_key', 'security_key_name']],
                                on=['date', 'security_key', 'security_key_name'], how='left')
 
     def price_momentum(self, month_lag_start=12, month_lag_end=1, exact_day_match=True):
         """Calculate price momentum between two lagged periods in months. The standard is between 12m and 1m lag.
-        
+
         :param month_lag_start: int, default 12
             Number of months ago to start the momentum measure.
         :param month_lag_end: int, default 1
@@ -910,32 +986,34 @@ class Features():
         # compile all the dates we need price values for
         # without assuming these are in the panel.
         # i.e can choose annual panel but 6m momentum
-        date_series = self._obj['date'].drop_duplicates()
-        dates_needed = [i+DateOffset(months=-month_lag_start)
-                        for i in date_series]
-        dates_needed += [i+DateOffset(months=-month_lag_end)
-                         for i in date_series]
-        dates_needed = dates_needed+[i for i in date_series]
-        df = []
-        for d in list(set(dates_needed)):
-            for i, r in self._obj[['security_key', 'security_key_name']].drop_duplicates().iterrows():
-                df.append([d, r['security_key_name'], r['security_key']])
-        df = pd.DataFrame(
-            df, columns=['date', 'security_key_name', 'security_key'])
-        df.__init__(df)
-        df = df.features.closing_price(
-            adj_type=2, exact_day_match=exact_day_match)
+        offset_s = self._obj.analysis.auto_select_monthly_offset_function(
+            n_months=month_lag_start)
+        offset_e = self._obj.analysis.auto_select_monthly_offset_function(
+            n_months=month_lag_end)
+        feature_since, _ = self._get_date_range(
+            delta=offset_s)
+        _, feature_until = self._get_date_range(
+            delta=offset_e)
 
-        start_offset = pd.tseries.offsets.DateOffset(months=month_lag_start)
-        df = df.analysis.add_offset_lagged_feature_on_date_by_key(
-            'closing_price', offset=start_offset)
-        end_offset = pd.tseries.offsets.DateOffset(months=month_lag_end)
-        df = df.analysis.add_offset_lagged_feature_on_date_by_key(
-            'closing_price', offset=end_offset)
-        nam_s = f"closing_price_lag({start_offset})"
-        nam_e = f"closing_price_lag({end_offset})"
-        df = df[(~df[nam_s].isna()) & (~df[nam_e].isna())]
-        df.loc[:, 'price_momentum'] = df.loc[:, nam_e] / df.loc[:, nam_s]-1
+        month_freq = self._obj.analysis.auto_select_panel_generator_monthly_frequency()
+        keys = self._get_keys()
+
+        df = get_security_panel(feature_since, feature_until, cusips=keys['cusip'],
+                                sedols=keys['sedol'], frequency=month_freq)
+
+        df = df.features.closing_price(adj_type=2,
+                                       exact_day_match=exact_day_match)
+
+        df = df.analysis.add_offset_lagged_feature_on_date_by_key('closing_price', key=['security_key', 'security_key_name'],
+                                                                  offset=offset_s)
+        start_column = df.columns[-1]
+        df = df.analysis.add_offset_lagged_feature_on_date_by_key('closing_price', key=['security_key', 'security_key_name'],
+                                                                  offset=offset_e)
+        end_column = df.columns[-1]
+
+        df = df[(~df[start_column].isna()) & (~df[end_column].isna())]
+        df.loc[:, 'price_momentum'] = df.loc[:,
+                                             end_column] / df.loc[:, start_column]-1
         return self._obj.merge(df[['price_momentum', 'date', 'security_key', 'security_key_name']],
                                on=['date', 'security_key', 'security_key_name'], how='left')
 
@@ -952,15 +1030,25 @@ class Features():
             if False keep as currency aware object (XMoney module)
         :returns: Panel with `dividends_per_share` added to the columns.
         """
-        self._warn_if_overwriting_and_delete('dividends_per_share')
         qad = ResourceManager().qad
-        feature_panel = qad.get_worldscope_feature(self._obj, feature_name='dividends_per_share', feature_code=5101,
-                                                   period='A',
-                                                   exact_match_allowed=exact_match_allowed,
-                                                   convert_currency=convert_currency,
-                                                   is_security_level=True)
+        if "worldscope_key" not in self._obj.columns:
+            self._obj = qad.worldscope_key(self._obj)
+        worldscope_keys = self._obj[~self._obj.worldscope_key.isna(
+        )].worldscope_key.unique()
+        feature = qad.worldscope_add_last_actual(
+            worldscope_keys, period='A', metric_code=5101, exact_match_allowed=exact_match_allowed)
+        self._obj.loc[self._obj.worldscope_key.isna(), 'worldscope_key'] = -99
 
-        self._obj = self._obj.merge(feature_panel, on=self.unit_key + self.time_key, how='left')
+        self._obj = self._asof_merge_feature(feature,
+                                             'dividends_per_share',
+                                             on='date',
+                                             by=['worldscope_key'],
+                                             exact_match_allowed=exact_match_allowed)
+        self._obj.drop(columns=['worldscope_key'], inplace=True)
+        metric_name = 'dividends_per_share'
+        if convert_currency:
+            self._obj = self._obj.units.convert_currency_aware_column(
+                metric=metric_name, exact_day_match=True)
         return self._obj
 
     def dividend_yield(self, exact_match_allowed=True):
@@ -976,26 +1064,27 @@ class Features():
         # create fresh sub panel in case of different currency or period values for total_debt or cash already on panel
         df = self._obj.copy()[['security_key', 'security_key_name', 'date']]
         df = df.features.dividends_per_share(
-           exact_match_allowed, convert_currency=True)
-        df = df.features.closing_price(adj_type=0, exact_day_match=exact_match_allowed, convert_currency=True, to_currency='USD')
-            
+            exact_match_allowed, convert_currency=True)
+        df = df.features.closing_price(
+            adj_type=0, exact_day_match=exact_match_allowed, convert_currency=True, to_currency='USD')
+
         indexer = ~df.closing_price.isna() & ~df.dividends_per_share.isna()
         df.loc[indexer, 'dividend_yield'] = df.loc[indexer,
-                                             'dividends_per_share']/df.loc[indexer, 'closing_price']
+                                                   'dividends_per_share']/df.loc[indexer, 'closing_price']
         return self._obj.merge(df[['security_key', 'security_key_name', 'date', 'dividend_yield']],
                                on=['security_key', 'security_key_name', 'date'],
                                how='left')
 
-    def issuer_name(self):
+    def issuer_name_qad(self):
         """Returns the issuer name from the core QAD tables
 
         :returns: Panel with `issuer_name` added to the columns.
         """
         keys = self._get_keys(abbreviated=True)
         qad = ResourceManager().qad
-        feature = qad.security_name_QAD_master_table( **keys)
+        feature = qad.security_name_QAD_master_table(**keys)
         return self._obj.merge(feature,
-                               on=['security_key_abbrev', 'security_key_name' ],
+                               on=['security_key_abbrev', 'security_key_name'],
                                how='left')
 
     def issuer_ISIN(self):
@@ -1007,7 +1096,7 @@ class Features():
         qad = ResourceManager().qad
         feature = qad.security_ISIN_QAD_master_table(**keys)
         return self._obj.merge(feature,
-                               on=['security_key_abbrev', 'security_key_name' ],
+                               on=['security_key_abbrev', 'security_key_name'],
                                how='left')
 
     def gross_profit_margin(self, period='A', exact_match_allowed=True):
@@ -1024,6 +1113,7 @@ class Features():
                       (i.e., strictly less-than / strictly greater-than).
         """
         self._warn_if_overwriting_and_delete('gross_profit_margin')
+        logging.warning("This metric is not reported by industries like Banks and Insurance.")
         qad = ResourceManager().qad
         feature_panel = qad.get_worldscope_feature(self._obj, feature_name='gross_profit_margin', feature_code=8306,
                                                    period=period,
@@ -1031,11 +1121,13 @@ class Features():
                                                    convert_currency=False,
                                                    is_security_level=False)
 
-        self._obj = self._obj.merge(feature_panel, on=self.unit_key + self.time_key, how='left')
-        self._obj['gross_profit_margin'] = self._obj['gross_profit_margin'].astype(float) / 100
+        self._obj = self._obj.merge(
+            feature_panel, on=self.unit_key + self.time_key, how='left')
+        self._obj['gross_profit_margin'] = self._obj['gross_profit_margin'].astype(
+            float) / 100
         return self._obj
 
-    def sales(self, period='A', exact_match_allowed=True, convert_currency=True):
+    def sales_qad(self, period='A', exact_match_allowed=True, convert_currency=True):
         """adds the worldscope "net sales or revenue variable" to the panel as 'sales' for brevity
         'NET SALES OR REVENUES represent gross sales and other operating revenue less discounts, returns and allowances.'
         :param period: str, period type (NOT pandas standard) to retrive net cash from,
@@ -1050,9 +1142,9 @@ class Features():
         feature_panel = qad.get_worldscope_feature(self._obj, feature_name='sales', feature_code=1001, period=period,
                                                    exact_match_allowed=exact_match_allowed, convert_currency=convert_currency,
                                                    is_security_level=False, db_column_name=db_column_name)
-        
-        self._obj = self._obj.merge(feature_panel, on=self.unit_key + self.time_key, how='left')
-        return self._obj
+
+        return self._obj.merge(
+            feature_panel, on=self.unit_key + self.time_key, how='left')
 
     def net_debt_by_ebitda_ratio(self, period='A', exact_match_allowed=True):
         """
@@ -1067,9 +1159,11 @@ class Features():
                       (i.e., strictly less-than / strictly greater-than).
         """
         df = self._obj[self.unit_key + ['date']].copy()
-        df = df.features.net_cash(period=period, exact_match_allowed=exact_match_allowed, convert_currency=True)
-        df = df.features.ebitda(period=period, exact_match_allowed=exact_match_allowed, convert_currency=True)
-        
+        df = df.features.net_cash(
+            period=period, exact_match_allowed=exact_match_allowed, convert_currency=True)
+        df = df.features.ebitda(
+            period=period, exact_match_allowed=exact_match_allowed, convert_currency=True)
+
         df['net_debt_by_ebitda_ratio'] = -df['net_cash'] / df['ebitda']
 
         self._obj = self._asof_merge_feature(df[self.unit_key + ['date', 'net_debt_by_ebitda_ratio']],
@@ -1094,11 +1188,12 @@ class Features():
         feature_panel = qad.get_worldscope_feature(self._obj, feature_name='book_value_per_share', feature_code=5476,
                                                    period='A', exact_match_allowed=exact_match_allowed,
                                                    convert_currency=True, is_security_level=True)
-        
+
         feature_panel = feature_panel.features.closing_price(adj_type=0, exact_day_match=exact_match_allowed,
                                                              convert_currency=True, to_currency='USD')
 
-        feature_panel['book_to_price_ratio'] = feature_panel['book_value_per_share']/feature_panel['closing_price']
+        feature_panel['book_to_price_ratio'] = feature_panel['book_value_per_share'] / \
+            feature_panel['closing_price']
 
         self._obj = self._obj.merge(feature_panel[self.unit_key + ['date', 'book_to_price_ratio']],
                                     on=self.unit_key + ['date'],
@@ -1116,10 +1211,13 @@ class Features():
                       (i.e., strictly less-than / strictly greater-than).
         """
         df = self._obj[self.unit_key + ['date']].copy()
-        df = df.features.ebitda(period='A', exact_match_allowed=exact_match_allowed, convert_currency=True)
-        df = df.features.enterprise_value(period='A', exact_match_allowed=exact_match_allowed)
+        df = df.features.ebitda(
+            period='A', exact_match_allowed=exact_match_allowed, convert_currency=True)
+        df = df.features.enterprise_value(
+            period='A', exact_match_allowed=exact_match_allowed)
 
-        df['ebitda_by_enterprise_value_ratio'] = df['ebitda'] / df['enterprise_value']
+        df['ebitda_by_enterprise_value_ratio'] = df['ebitda'] / \
+            df['enterprise_value']
 
         self._obj = self._asof_merge_feature(df[self.unit_key + ['date', 'ebitda_by_enterprise_value_ratio']],
                                              'ebitda_by_enterprise_value_ratio',
@@ -1139,24 +1237,27 @@ class Features():
                       (i.e., strictly less-than / strictly greater-than).
         """
         df = self._obj[self.unit_key + ['date']].copy()
-        df = df.features.net_cash(period='A', exact_match_allowed=exact_match_allowed, convert_currency=True)
-        df = df.features.consolidated_market_value(exact_day_match=exact_match_allowed, convert_currency=True)
+        df = df.features.net_cash(
+            period='A', exact_match_allowed=exact_match_allowed, convert_currency=True)
+        df = df.features.consolidated_market_value(
+            exact_day_match=exact_match_allowed, convert_currency=True)
 
-        df['net_debt_by_market_value_ratio'] = -df['net_cash'] / df['consolidated_market_value']
+        df['net_debt_by_market_value_ratio'] = - \
+            df['net_cash'] / df['consolidated_market_value']
 
         self._obj = self._asof_merge_feature(df[self.unit_key + ['date', 'net_debt_by_market_value_ratio']],
                                              'net_debt_by_market_value_ratio',
                                              exact_match_allowed=exact_match_allowed)
         return self._obj
 
-    def ebitda(self, period='A', exact_match_allowed=True, convert_currency=True):
+    def ebitda_qad(self, period='A', exact_match_allowed=True, convert_currency=True):
         """
         Function returns EBITDA.
         EARNINGS BEFORE INTEREST, TAXES, DEPRECIATION & AMORTIZATION (EBITDA) represent the earnings
         of a company before interest expense, income taxes and depreciation. It is calculated by taking the pre-tax
         income and adding back interest expense on debt and depreciation, depletion and amortization and
         subtracting interest capitalized.
-        
+
        :param period: str, default 'A'
                     period type (NOT pandas standard) to retrive from,
                     either annual type ['A','B','G'] or quarterly type ["E","Q","H","I","R","@"]
@@ -1178,8 +1279,8 @@ class Features():
                                                    exact_match_allowed=exact_match_allowed, convert_currency=convert_currency,
                                                    is_security_level=False, db_column_name=db_column_name)
 
-        self._obj = self._obj.merge(feature_panel, on=self.unit_key + self.time_key, how='left')
-        return self._obj
+        return self._obj.merge(
+            feature_panel, on=self.unit_key + self.time_key, how='left')
 
     def earnings_per_share(self, period='A', exact_match_allowed=True, convert_currency=True, diluted_earnings=True):
         """adds the worldscope "Earnings Per Share" to the panel as `earnings_per_share`
@@ -1209,9 +1310,10 @@ class Features():
                                                    period=period,
                                                    exact_match_allowed=exact_match_allowed,
                                                    convert_currency=convert_currency,
-                                                   is_security_level=True, db_column_name=db_column_name)
+                                                   is_security_level=False, db_column_name=db_column_name)
 
-        self._obj = self._obj.merge(feature_panel, on=self.unit_key + self.time_key, how='left')
+        self._obj = self._obj.merge(
+            feature_panel, on=self.unit_key + self.time_key, how='left')
         return self._obj
 
     def ebitda_margin(self, period='A', exact_match_allowed=True):
@@ -1228,13 +1330,60 @@ class Features():
         """
         panel_key = self.unit_key + self.time_key
         df = self._obj[panel_key].copy()
-        df = df.features.ebitda(period=period, exact_match_allowed=exact_match_allowed, convert_currency=True)
-        df = df.features.sales(period=period, exact_match_allowed=exact_match_allowed, convert_currency=True)
+        df = df.features.ebitda(
+            period=period, exact_match_allowed=exact_match_allowed, convert_currency=True)
+        df = df.features.sales(
+            period=period, exact_match_allowed=exact_match_allowed, convert_currency=True)
 
         df['ebitda_margin'] = df['ebitda'] / df['sales']
 
         self._obj = self._obj.merge(df[panel_key + ['ebitda_margin']],
                                     on=panel_key, how='left')
+        return self._obj
+
+    def gic_qad(self, add_gic_desc=False):
+        """
+        Add GIC codes and names to the panel.
+        :var just_code: bool, If True only add the gic code, not the industry names
+        
+        """
+        qad = ResourceManager().qad
+        if 'gvkey' not in self._obj:
+            self._obj = self._obj.features.gvkey(source='qad')
+        NA = self._obj[self._obj.security_key_name == 'cusip']
+        if not NA.empty:
+            NA_gvkeys=NA.features._get_gvkeys()
+        else:
+            NA_gvkeys=[]
+        ROW = self._obj[self._obj.security_key_name == 'sedol']
+        if not ROW.empty:
+            ROW_gvkeys = ROW.features._get_gvkeys()
+        else:
+            ROW_gvkeys=[]
+        since, until = self._get_date_range(
+            delta=datetime.timedelta(days=372))
+        codes = qad.get_gvkey_to_gic_since_until(
+            NA_gvkeys, ROW_gvkeys, since, until)
+        codes['GICS_since'] = pd.to_datetime(codes['GICS_since']).fillna(
+            datetime.datetime(year=1900, month=1, day=1))
+        codes['GICS_until'] = pd.to_datetime(
+            codes['GICS_until']).fillna(datetime.datetime.now())
+        if 'gic' in self._obj.columns:
+            logging.warning("Overwriting existing 'gic' column.")
+            del self._obj['gic']
+        self._obj = self._obj.sort_values('date')
+        codes = codes.sort_values('GICS_since')
+        if not add_gic_desc:
+            keep_cols = ['gic']
+        else:
+            keep_cols = ['gic', 'SUB-INDUSTRY', 'SECTOR', 'GROUP', 'INDUSTRY']
+        self._obj = pd.merge_asof(self._obj,
+                                  codes,
+                                  left_on='date',
+                                  right_on='GICS_since',
+                                  by='gvkey')[list(self._obj.columns) + keep_cols]
+        self._obj['gic'] = self._obj['gic'].fillna(
+            -1).astype(int).astype(str)
         return self._obj
 
     def return_on_equity(self, period='A', exact_match_allowed=True):
@@ -1280,14 +1429,16 @@ class Features():
         """
         panel_key = self.unit_key + self.time_key
         qad = ResourceManager().qad
-        feature_panel = qad.get_worldscope_feature(self._obj, feature_name='tangible_book_value_per_share', feature_code=5486,
+        feature_panel = qad.get_worldscope_feature(self._obj, feature_name='tangible_book_value_per_share',
+                                                   feature_code=5486,
                                                    period='A', exact_match_allowed=exact_match_allowed,
                                                    convert_currency=True, is_security_level=True)
         feature_panel = feature_panel.features.earnings_per_share(period=period,
                                                                   exact_match_allowed=exact_match_allowed,
                                                                   convert_currency=True)
 
-        feature_panel['return_on_tangible_equity'] = feature_panel['earnings_per_share'] / feature_panel['tangible_book_value_per_share']
+        feature_panel['return_on_tangible_equity'] = feature_panel['earnings_per_share'] / feature_panel[
+            'tangible_book_value_per_share']
 
         self._obj = self._obj.merge(feature_panel[panel_key + ['return_on_tangible_equity']],
                                     on=panel_key, how='left')
@@ -1317,7 +1468,8 @@ class Features():
         qad = ResourceManager().qad
 
         feature_panel = qad.get_worldscope_feature(self._obj, feature_name='buybacks', feature_code=4751, period=period,
-                                                   exact_match_allowed=exact_match_allowed, convert_currency=convert_currency,
+                                                   exact_match_allowed=exact_match_allowed,
+                                                   convert_currency=convert_currency,
                                                    is_security_level=True, db_column_name=db_column_name)
 
         feature_panel = feature_panel.features.closing_price(adj_type=0, exact_day_match=exact_match_allowed,
@@ -1327,13 +1479,13 @@ class Features():
                                     on=panel_key, how='left')
         return self._obj
 
-    def free_cash_flow(self, period='A', exact_match_allowed=True, convert_currency=True):
+    def free_cash_flow_qad(self, period='A', exact_match_allowed=True, convert_currency=True):
         """
         Returns Free Cash Flow, defined as Funds from Operations - Capital Expenditures.
-        Do not use available field Free Cash Flow Per Share from Worldscope (field 05507) as this field 
+        Do not use available field Free Cash Flow Per Share from Worldscope (field 05507) as this field
         subtracts Cash Dividends Paid (field 04551) which is not our standard.
-        
-        For IFRS accounts, we do not include acquisition of intangibles /capitalised R&D in the 
+
+        For IFRS accounts, we do not include acquisition of intangibles /capitalised R&D in the
         capital expenditures used.
 
         :param period: str, default 'A'
@@ -1370,9 +1522,8 @@ class Features():
 
         feature_panel = funds_from_operation.merge(capital_expenditures, on=panel_key)
         feature_panel['free_cash_flow'] = feature_panel['funds_from_operations'] - feature_panel['capital_expenditures']
-        self._obj = self._obj.merge(feature_panel[panel_key + ['free_cash_flow']],
+        return self._obj.merge(feature_panel[panel_key + ['free_cash_flow']],
                                     on=panel_key, how='left')
-        return self._obj
 
     def free_cash_flow_conversion_ratio(self, period='A', exact_match_allowed=True):
         """
@@ -1399,7 +1550,7 @@ class Features():
         self._obj = self._obj.merge(df[panel_key + ['free_cash_flow_conversion_ratio']],
                                     on=panel_key, how='left')
         return self._obj
-    
+
     def free_cash_flow_yield(self, period='A', exact_match_allowed=True):
         """
         Returns Free Cash Flow Yield, calculated as Free Cash Flow Per Share / Share Price.
@@ -1417,7 +1568,7 @@ class Features():
         panel_key = self.unit_key + self.time_key
         df = self._obj[panel_key].copy()
         qad = ResourceManager().qad
-        
+
         fcf_per_share = qad.get_worldscope_feature(self._obj, feature_name='free_cash_flow_per_share',
                                                    feature_code=5507,
                                                    period=period,
@@ -1425,11 +1576,14 @@ class Features():
                                                    convert_currency=True,
                                                    is_security_level=True, db_column_name=None)
 
-        feature_panel = fcf_per_share.features.dividends_per_share(exact_match_allowed=exact_match_allowed, convert_currency=True)
-        feature_panel['free_cash_flow_per_share'] = feature_panel['free_cash_flow_per_share'] + feature_panel['dividends_per_share']
+        feature_panel = fcf_per_share.features.dividends_per_share(exact_match_allowed=exact_match_allowed,
+                                                                   convert_currency=True)
+        feature_panel['free_cash_flow_per_share'] = feature_panel['free_cash_flow_per_share'] + feature_panel[
+            'dividends_per_share']
         feature_panel = feature_panel.features.closing_price(adj_type=0, exact_day_match=exact_match_allowed,
-                                                               convert_currency=True, to_currency='USD')
-        feature_panel['free_cash_flow_yield'] = feature_panel['free_cash_flow_per_share'] / feature_panel['closing_price']
+                                                             convert_currency=True, to_currency='USD')
+        feature_panel['free_cash_flow_yield'] = feature_panel['free_cash_flow_per_share'] / feature_panel[
+            'closing_price']
 
         self._obj = self._obj.merge(feature_panel[panel_key + ['free_cash_flow_yield']],
                                     on=panel_key, how='left')
