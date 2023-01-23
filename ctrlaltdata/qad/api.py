@@ -1287,7 +1287,7 @@ class Features():
 
         EARNINGS PER SHARE represents the earnings for the 12 months ended the last calendar quarter of the year
         for U.S. corporations and the fiscal year for non-U.S. corporations It represents the fully diluted earnings per
-        share (field 05290) for US companies and basic earnings per share (field 05210) for other companies.
+        share (field 05290 Annual, 18440 else) for US companies and basic earnings per share (field 05210 Annual, 18420 else) for other companies.
 
         :param period: str, period type (NOT pandas standard) to retrive net cash from,
             either annual type ['A','B','G'] or quarterly type ["E","Q","H","I","R","@"]
@@ -1297,13 +1297,20 @@ class Features():
         """
         self._warn_if_overwriting_and_delete('earnings_per_share')
         qad = ResourceManager().qad
-
-        if diluted_earnings:
-            feature_code = 5290
-            db_column_name = 'earnings_per_share___fully_diluted_shares___year'
+        
+        if period=='A':
+            if diluted_earnings:
+                feature_code = 5290
+                db_column_name = 'earnings_per_share___fully_diluted_shares___year'
+            else:
+                feature_code = 5210
+                db_column_name = 'earnings_per_share___basic___year'
+        elif diluted_earnings:
+            feature_code=18440
+            db_column_name = 'earnings_per_share___fully_diluted___fiscal'
         else:
-            feature_code = 5210
-            db_column_name = 'earnings_per_share___basic___year'
+            feature_code=18420
+            db_column_name = 'earnings_per_share___fiscal___basic'
 
         feature_panel = qad.get_worldscope_feature(self._obj, feature_name='earnings_per_share',
                                                    feature_code=feature_code,
