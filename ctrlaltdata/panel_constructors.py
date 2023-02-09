@@ -401,7 +401,7 @@ def get_gic_panel(*args, index='sp_500', gic='', since=None, until=None, frequen
                                   **kwargs)
     else:
         raise ValueError(f'Index {index} not supported.')
-    panel = panel.features.gic_code(*args, source=source, **kwargs)
+    panel = panel.features.gic(*args, source=source, **kwargs)
     if gic:
         panel = panel.loc[panel.gic.apply(lambda x: x[:len(gic)]) == gic]
 
