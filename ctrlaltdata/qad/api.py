@@ -558,7 +558,7 @@ class Features():
         return self._obj
 
     def ibes_actuals(self, metric_name, period_type=4, keep_period_end_date=False, keep_ibes_key=False,
-                     convert_currency=True):
+                     convert_currency=True,keep_announce_date=False):
         """Attaches <period_type> actuals for metric <metric_name> for the last available period.
         :param metric_name: Specifies which metric to get forecasts for. use lookup_ibes_metrics in qad.py to get
         a mapping between metric codes and names.
@@ -577,9 +577,10 @@ class Features():
         object (XMoney module).
         There are two relevant currency values. For the per share measures (EPS) and income statement measures (sales).
         For UK securities these values can be different (pence and pounds).
+        :param keep_announce_date: bool. Keep the date the actuals were announced and recording in the IBES database
         :return: Panel with actuals column attached for the required metric.
         """
-        keep = list(self._obj.columns) + [metric_name]
+        keep = ['date','ibes_key',metric_name]
         qad = ResourceManager().qad
         since, until = self._get_date_range(delta=datetime.timedelta(days=365))
         if 'ibes_key' not in self._obj.columns:
@@ -591,10 +592,11 @@ class Features():
                                        ibes_keys=ibes_keys,
                                        period_type=period_type)
 
-        if keep_period_end_date:
+        if keep_period_end_date and 'period_end_date_act' not in self._obj.columns:
             keep += ['period_end_date_act']
-        if keep_ibes_key:
-            keep += ['ibes_key']
+        if keep_announce_date and 'announce_date' not in self._obj.columns:
+            keep += ['announce_date']
+            actuals.loc[:,'announce_date']=actuals.loc[:,'date']
         if not actuals.empty:
             currency_dict = qad.ibes_currency_dictionary(
                 actuals['DefCurrPermID'].unique())
@@ -602,10 +604,12 @@ class Features():
                                                                        'DefCurrPermID'].map(currency_dict)
             actuals = convert_metric_to_currency_aware_column(
                 actuals, metric_name, 'ibes_currency_'+metric_name)
-            self._obj = self._asof_merge_feature(actuals,
+            self._obj = self._asof_merge_feature(actuals[keep],
                                                  metric_name,
                                                  on='date',
-                                                 by=['ibes_key'])[keep]
+                                                 by=['ibes_key'])
+            if not keep_ibes_key:
+                self._obj.drop(columns='ibes_key',inplace=True)
             if convert_currency:
                 self._obj = self._obj.units.convert_currency_aware_column(
                     metric=metric_name, exact_day_match=True)

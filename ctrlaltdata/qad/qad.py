@@ -750,6 +750,68 @@ class QAD(SqlReader):
         result['ibes_key'] = result['ibes_key'].astype('str')
         return result
 
+    def get_ibes_forecasts_individual(self,
+                                      since,
+                                      until,
+                                      metric_name,
+                                      ibes_keys,
+                                      period_type=4,
+                                      forecast_period=1):
+        """
+        This function is used to get the individual forecasts for a given metric. The function returns all
+        forecast periods, not just the one specified via forecast_period but labels them
+        period{period_type}_end_date_fp{forecast_period}. Filtering should be carried out by the end user.
+
+        Parameters
+        ----------
+        since : str
+            The start date for the forecasts to be returned. Format: YYYY-MM-DD
+        until : str
+            The end date for the forecasts to be returned. Format: YYYY-MM-DD
+        metric_name : str
+            The name of the metric to be returned. Must be one of the following:
+        ibes_keys : list
+            A list of ibes keys for which forecasts are to be returned.
+        period_type : int, optional
+            The period type for which forecasts are to be returned. The default is 4.
+        forecast_period : int, optional
+            The forecast period for which forecasts are to be returned. The default is 1.
+        """
+        if len(ibes_keys) > 1:
+            ibes_keys = ",".join(["'{}'".format(ibes_key)
+                                  for ibes_key in ibes_keys])
+        else:
+            ibes_keys = str(ibes_keys[0])
+
+        metric_code = self.lookup_ibes_metric_by_name(metric_name)
+
+        query = f"""        
+                SELECT	DISTINCT
+                        EstPermID AS ibes_key,
+                        BrokerID AS broker_id,
+                        EffectiveDate AS date,
+                        PerEndDate AS period{period_type}_end_date_fp{forecast_period},
+                        DefEstValue*DefScale AS {metric_name},
+                        DefCurrPermID,
+                        IsExcluded as is_excluded
+                FROM	dbo.TREDetPer
+                WHERE	PerType = {period_type}
+                AND		EstPermID IN ({ibes_keys})
+                AND     measure = {metric_code}
+                AND		PerEndDate > '{since}'
+                AND		EffectiveDate < '{until}'
+                AND     IsParent= '0';
+                """
+
+        result = self.query(query)
+        result.loc[:, 'DefCurrPermID'] = result['DefCurrPermID'].astype(str)
+        result['date'] = pd.to_datetime(result['date'])
+        result[f'period{period_type}_end_date_fp{forecast_period}'] = pd.to_datetime(
+            result[f'period{period_type}_end_date_fp{forecast_period}'])
+        result['ibes_key'] = result['ibes_key'].astype('str')
+        result['broker_id'] = result['broker_id'].astype('str')
+        return result
+
     def get_ibes_actuals(self,
                          since,
                          until,
